@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import {
-  Alert,
   GestureResponderEvent,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -19,6 +19,8 @@ import {
 import { AppHeader } from '../../components/layout/AppHeader';
 import { Screen } from '../../components/layout/Screen';
 import { BottomSheet } from '../../components/ui/BottomSheet';
+import { OfflineModelDownloadCard } from '../../ai/OfflineModelDownloadCard';
+import { useOfflineStudyHelperStatus } from '../../ai/useOfflineStudyHelperStatus';
 import { Book } from '../../types/Book';
 import { StudentProfile } from '../../types/StudentProfile';
 
@@ -67,8 +69,12 @@ export function BookshelfScreen({
   const [editBookTitle, setEditBookTitle] = useState('');
   const [editBookDescription, setEditBookDescription] = useState('');
   const [editBookError, setEditBookError] = useState('');
+  const [bookToArchive, setBookToArchive] = useState<Book | null>(null);
+  const [isArchiving, setIsArchiving] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const studyHelper = useOfflineStudyHelperStatus();
   const isTablet = width >= 700;
+  const canCreateBook = Platform.OS === 'web' || studyHelper.isReady;
   const containerWidth = Math.min(width, isTablet ? 980 : 448);
   const horizontalPadding = isTablet ? 64 : 40;
   const gridGap = isTablet ? 18 : 14;
@@ -140,21 +146,18 @@ export function BookshelfScreen({
 
   const handleArchivePress = (book: Book) => {
     setActiveMenuBookId(null);
+    setBookToArchive(book);
+  };
 
-    Alert.alert(
-      'Are you sure?',
-      'This book will be stored in the archive and can be restored later.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Delete',
-          style: 'destructive',
-          onPress: () => {
-            onArchiveBook(book.id);
-          },
-        },
-      ]
-    );
+  const handleArchiveConfirm = async () => {
+    if (!bookToArchive || isArchiving) {
+      return;
+    }
+
+    setIsArchiving(true);
+    await onArchiveBook(bookToArchive.id);
+    setIsArchiving(false);
+    setBookToArchive(null);
   };
 
   return (
@@ -181,6 +184,8 @@ export function BookshelfScreen({
             </Text>
           </View>
 
+          <OfflineModelDownloadCard helper={studyHelper} />
+
           <View style={styles.searchBar}>
             <TextInput
               value={searchQuery}
@@ -196,23 +201,25 @@ export function BookshelfScreen({
           </View>
 
           <View style={[styles.grid, { gap: gridGap }]}>
-            <Pressable
-              onPress={() => {
-                setBookSheetOpen(true);
-              }}
-              style={({ pressed }) => [
-                styles.newBookCard,
-                { width: cardWidth },
-                isTablet && styles.tabletCard,
-                pressed && styles.cardPressed,
-              ]}
-            >
-              <View style={styles.newBookIcon}>
-                <IconNewBook color="#002576" size={16} />
-              </View>
+            {canCreateBook ? (
+              <Pressable
+                onPress={() => {
+                  setBookSheetOpen(true);
+                }}
+                style={({ pressed }) => [
+                  styles.newBookCard,
+                  { width: cardWidth },
+                  isTablet && styles.tabletCard,
+                  pressed && styles.cardPressed,
+                ]}
+              >
+                <View style={styles.newBookIcon}>
+                  <IconNewBook color="#002576" size={16} />
+                </View>
 
-              <Text style={styles.newBookText}>New Book</Text>
-            </Pressable>
+                <Text style={styles.newBookText}>New Book</Text>
+              </Pressable>
+            ) : null}
 
             {filteredBooks.length === 0 && books.length > 0 ? (
               <View style={[styles.emptySearchCard, { width: cardWidth }]}>
@@ -401,6 +408,47 @@ export function BookshelfScreen({
             <Text style={styles.primaryButtonText}>
               {isSaving ? 'Saving...' : 'Save lesson'}
             </Text>
+          </Pressable>
+        </View>
+      </BottomSheet>
+
+      <BottomSheet
+        visible={Boolean(bookToArchive)}
+        title="Delete book?"
+        snapPoints={['36%']}
+        onClose={() => {
+          setBookToArchive(null);
+        }}
+      >
+        <View style={styles.sheetForm}>
+          <Text style={styles.archiveConfirmText}>
+            This book will be moved to Archive Books. You can restore it there
+            later.
+          </Text>
+
+          <Pressable
+            disabled={isArchiving}
+            onPress={handleArchiveConfirm}
+            style={({ pressed }) => [
+              styles.dangerButton,
+              pressed && styles.cardPressed,
+              isArchiving && styles.disabledButton,
+            ]}
+          >
+            <Text style={styles.dangerButtonText}>
+              {isArchiving ? 'Moving...' : 'Move to Archive'}
+            </Text>
+          </Pressable>
+
+          <Pressable
+            disabled={isArchiving}
+            onPress={() => setBookToArchive(null)}
+            style={({ pressed }) => [
+              styles.secondaryButton,
+              pressed && styles.cardPressed,
+            ]}
+          >
+            <Text style={styles.secondaryButtonText}>Keep Book</Text>
           </Pressable>
         </View>
       </BottomSheet>
@@ -683,6 +731,40 @@ const styles = StyleSheet.create({
     fontSize: 16,
     lineHeight: 20,
     fontWeight: '700',
+  },
+  dangerButton: {
+    width: '100%',
+    height: 52,
+    borderRadius: 999,
+    backgroundColor: '#E12531',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  dangerButtonText: {
+    color: '#ffffff',
+    fontSize: 16,
+    lineHeight: 20,
+    fontWeight: '700',
+  },
+  secondaryButton: {
+    width: '100%',
+    height: 50,
+    borderRadius: 999,
+    backgroundColor: '#eeeeee',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  secondaryButtonText: {
+    color: '#1a1c1c',
+    fontSize: 15,
+    lineHeight: 20,
+    fontWeight: '700',
+  },
+  archiveConfirmText: {
+    color: '#444653',
+    fontSize: 15,
+    lineHeight: 22,
+    fontWeight: '400',
   },
   disabledButton: {
     opacity: 0.65,

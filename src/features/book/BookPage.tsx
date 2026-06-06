@@ -1,7 +1,10 @@
 import * as DocumentPicker from 'expo-document-picker';
-import { useEffect, useRef, useState } from 'react';
+import { Directory, File, Paths } from 'expo-file-system';
+import * as Sharing from 'expo-sharing';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Alert,
+  Animated,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -13,7 +16,12 @@ import {
   View,
 } from 'react-native';
 import {
+  KeyboardAwareScrollView,
+  KeyboardAwareScrollViewRef,
+} from 'react-native-keyboard-controller';
+import {
   IconChevronRight,
+  IconDots,
   IconFlashcard,
   IconPDF,
   IconPlus,
@@ -23,32 +31,118 @@ import {
 import { AppHeader } from '../../components/layout/AppHeader';
 import { Screen } from '../../components/layout/Screen';
 import { BookBottomNav, BookTab } from '../../components/navigation/BookBottomNav';
+import { BottomSheet } from '../../components/ui/BottomSheet';
+import { processSourcePdfPlaceholder } from '../../ai/sourceProcessing';
+import { useOfflineAi } from '../../ai/useOfflineAi';
+import {
+  addSource,
+  appendChatMessage,
+  deleteSource,
+  hasProcessingSources,
+  listRecentChatMessagesByBook,
+  listSourcesWithProcessingByBook,
+  renameSource,
+  SourceWithProcessing,
+  StoredChatMessage,
+} from '../../data/database';
 import { Book } from '../../types/Book';
 
-type Source = {
-  id: string;
-  name: string;
-};
+type Source = Pick<
+  SourceWithProcessing,
+  | 'id'
+  | 'name'
+  | 'fileUri'
+  | 'fileSize'
+  | 'processingStatus'
+  | 'processingError'
+>;
 
 type ChatMessage = {
   id: string;
   role: 'user' | 'ai';
+  text: string;
+  sources?: string[];
+  kind?: 'answer' | 'quiz' | 'flashcards' | 'status';
+};
+
+type QuizQuestion = {
+  question: string;
+  options: string[];
+  answer: string;
+  explanation?: string;
+};
+
+type MarkdownSegment = {
+  text: string;
+  bold: boolean;
+};
+
+type PendingChatPrompt = {
+  id: number;
   text: string;
 };
 
 function SourcesTab({ book }: { book: Book }) {
   const { width } = useWindowDimensions();
   const isTablet = width >= 700;
-  const [sources, setSources] = useState<Source[]>(
-    book.sources > 0
-      ? Array.from({ length: book.sources }, (_, index) => ({
-          id: String(index + 1),
-          name: `Chapter ${index + 1}.pdf`,
-        }))
-      : []
-  );
+  const [sources, setSources] = useState<Source[]>([]);
+  const [isUploading, setIsUploading] = useState(false);
+  const [menuSourceId, setMenuSourceId] = useState<string | null>(null);
+  const [sourceToRename, setSourceToRename] = useState<Source | null>(null);
+  const [renameValue, setRenameValue] = useState('');
+  const [isRenamingSource, setIsRenamingSource] = useState(false);
+  const [sourceToRemove, setSourceToRemove] = useState<Source | null>(null);
+  const [isRemovingSource, setIsRemovingSource] = useState(false);
+  const offlineAi = useOfflineAi(book.id, book.title);
+
+  useEffect(() => {
+    let isActive = true;
+
+    listSourcesWithProcessingByBook(book.id)
+      .then((rows) => {
+        if (!isActive) {
+          return;
+        }
+
+        setSources(
+          rows.map((row) => ({
+            id: row.id,
+            name: row.name,
+            fileUri: row.fileUri,
+            fileSize: row.fileSize,
+            processingStatus: row.processingStatus,
+            processingError: row.processingError,
+          }))
+        );
+      })
+      .catch(() => {
+        if (isActive) {
+          setSources([]);
+        }
+      });
+
+    return () => {
+      isActive = false;
+    };
+  }, [book.id]);
+
+  const sanitizeFilename = (name: string) => {
+    const trimmed = name.trim();
+    const normalized = trimmed.replace(/[^a-zA-Z0-9._ -]/g, '');
+    return normalized.length > 0 ? normalized : `lesson-${Date.now()}.pdf`;
+  };
+
+  const ensurePdfName = (name: string) => {
+    return name.toLowerCase().endsWith('.pdf') ? name : `${name}.pdf`;
+  };
 
   const handleUpload = async () => {
+    if (isUploading) {
+      return;
+    }
+
+    setIsUploading(true);
+
     try {
       const result = await DocumentPicker.getDocumentAsync({
         copyToCacheDirectory: true,
@@ -61,16 +155,198 @@ function SourcesTab({ book }: { book: Book }) {
       }
 
       const selectedPdf = result.assets[0];
+      const safeName = ensurePdfName(
+        sanitizeFilename(selectedPdf.name || `lesson-${Date.now()}`)
+      );
+      let storedUri = selectedPdf.uri;
+
+      if (Platform.OS !== 'web') {
+        const destinationDirectory = new Directory(
+          Paths.document,
+          'alab',
+          'sources',
+          book.id
+        );
+        destinationDirectory.create({ intermediates: true, idempotent: true });
+        const destinationFile = new File(
+          destinationDirectory,
+          `${Date.now()}-${safeName}`
+        );
+        const sourceFile = new File(selectedPdf.uri);
+        await sourceFile.copy(destinationFile);
+        storedUri = destinationFile.uri;
+
+        try {
+          sourceFile.delete();
+        } catch {
+          // The picker cache is temporary; keep the saved source if cleanup fails.
+        }
+      }
+
+      const savedSource = await addSource(book.id, {
+        filename: safeName,
+        fileUri: storedUri,
+        fileSize: selectedPdf.size ?? null,
+      });
+
+      if (!savedSource) {
+        throw new Error('Source save failed');
+      }
 
       setSources((previous) => [
-        ...previous,
         {
-          id: String(previous.length + 1),
-          name: selectedPdf.name || `Chapter ${previous.length + 1}.pdf`,
+          id: savedSource.id,
+          name: savedSource.name,
+          fileUri: savedSource.fileUri,
+          fileSize: savedSource.fileSize,
+          processingStatus: 'pending',
+          processingError: null,
         },
+        ...previous,
       ]);
+
+      await processSourcePdfPlaceholder(savedSource.id, savedSource.fileUri, {
+        embedText: offlineAi.embedLessonText,
+        modelName: offlineAi.embeddingModelName,
+        onStatusChange: (status) => {
+          setSources((previous) =>
+            previous.map((source) =>
+              source.id === savedSource.id
+                ? {
+                    ...source,
+                    processingStatus: status,
+                  }
+                : source
+            )
+          );
+        },
+      });
+
+      const refreshedSources = await listSourcesWithProcessingByBook(book.id);
+      setSources(
+        refreshedSources.map((row) => ({
+          id: row.id,
+          name: row.name,
+          fileUri: row.fileUri,
+          fileSize: row.fileSize,
+          processingStatus: row.processingStatus,
+          processingError: row.processingError,
+        }))
+      );
     } catch {
       Alert.alert('Upload failed', 'Please try choosing the PDF again.');
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
+  const handleRemoveSource = async () => {
+    if (!sourceToRemove || isRemovingSource) {
+      return;
+    }
+
+    setIsRemovingSource(true);
+
+    try {
+      await deleteSource(sourceToRemove.id);
+
+      if (Platform.OS !== 'web') {
+        try {
+          const file = new File(sourceToRemove.fileUri);
+          file.delete();
+        } catch {
+          // The database cleanup is the important part for removing AI knowledge.
+        }
+      }
+
+      setSources((previous) =>
+        previous.filter((source) => source.id !== sourceToRemove.id)
+      );
+      setSourceToRemove(null);
+      setMenuSourceId(null);
+    } catch {
+      Alert.alert('Remove failed', 'Please try removing the source again.');
+    } finally {
+      setIsRemovingSource(false);
+    }
+  };
+
+  const handleDownloadSource = async (source: Source) => {
+    setMenuSourceId(null);
+
+    try {
+      if (Platform.OS === 'web') {
+        if (typeof document === 'undefined') {
+          throw new Error('Downloads are unavailable');
+        }
+
+        const anchor = document.createElement('a');
+        anchor.href = source.fileUri;
+        anchor.download = source.name;
+        anchor.rel = 'noopener noreferrer';
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+        return;
+      }
+
+      const canShare = await Sharing.isAvailableAsync();
+
+      if (!canShare) {
+        throw new Error('Sharing is unavailable');
+      }
+
+      await Sharing.shareAsync(source.fileUri, {
+        dialogTitle: 'Download PDF',
+        mimeType: 'application/pdf',
+        UTI: 'com.adobe.pdf',
+      });
+    } catch {
+      Alert.alert(
+        'Download unavailable',
+        'ALAB could not open this PDF from this device.'
+      );
+    }
+  };
+
+  const openRenameSource = (source: Source) => {
+    setSourceToRename(source);
+    setRenameValue(source.name);
+    setMenuSourceId(null);
+  };
+
+  const handleRenameSource = async () => {
+    const nextName = ensurePdfName(sanitizeFilename(renameValue));
+
+    if (!sourceToRename || isRenamingSource || !nextName.trim()) {
+      return;
+    }
+
+    setIsRenamingSource(true);
+
+    try {
+      const renamedSource = await renameSource(sourceToRename.id, nextName);
+
+      if (!renamedSource) {
+        throw new Error('Source rename failed');
+      }
+
+      setSources((previous) =>
+        previous.map((source) =>
+          source.id === sourceToRename.id
+            ? {
+                ...source,
+                name: renamedSource.name,
+              }
+            : source
+        )
+      );
+      setSourceToRename(null);
+      setRenameValue('');
+    } catch {
+      Alert.alert('Rename failed', 'Please try renaming the source again.');
+    } finally {
+      setIsRenamingSource(false);
     }
   };
 
@@ -91,9 +367,12 @@ function SourcesTab({ book }: { book: Book }) {
               styles.uploadButton,
               pressed && styles.pressedScale,
             ]}
+            disabled={isUploading}
           >
             <IconPlus color="#002576" size={12} />
-            <Text style={styles.uploadButtonText}>Upload PDF</Text>
+      <Text style={styles.uploadButtonText}>
+              {isUploading ? 'Analyzing...' : 'Upload PDF'}
+            </Text>
           </Pressable>
         </View>
       </View>
@@ -101,30 +380,92 @@ function SourcesTab({ book }: { book: Book }) {
   }
 
   return (
-    <ScrollView
-      style={styles.tabScroll}
-      contentContainerStyle={[
-        styles.sourcesContent,
-        isTablet && styles.tabletTabContent,
-      ]}
-      showsVerticalScrollIndicator={false}
-    >
-      <Text style={styles.centerTitle}>Resources</Text>
-
-      <Pressable
-        onPress={handleUpload}
-        style={({ pressed }) => [
-          styles.uploadButton,
-          pressed && styles.pressedScale,
+    <>
+      <ScrollView
+        style={styles.tabScroll}
+        contentContainerStyle={[
+          styles.sourcesContent,
+          isTablet && styles.tabletTabContent,
         ]}
+        showsVerticalScrollIndicator={false}
       >
-        <IconPlus color="#002576" size={12} />
-        <Text style={styles.uploadButtonText}>UPLOAD PDF</Text>
-      </Pressable>
+        <Text style={styles.centerTitle}>Resources</Text>
 
-      <View style={styles.sourceList}>
-        {sources.map((source) => (
-          <View key={source.id} style={styles.sourceCard}>
+        <Pressable
+          onPress={handleUpload}
+          style={({ pressed }) => [
+            styles.uploadButton,
+            pressed && styles.pressedScale,
+          ]}
+          disabled={isUploading}
+        >
+          <IconPlus color="#002576" size={12} />
+          <Text style={styles.uploadButtonText}>
+            {isUploading ? 'ANALYZING...' : 'UPLOAD PDF'}
+          </Text>
+        </Pressable>
+
+        <View style={styles.sourceList}>
+          {sources.map((source) => (
+            <View
+              key={source.id}
+              style={[
+                styles.sourceCard,
+                menuSourceId === source.id && styles.activeSourceCard,
+              ]}
+            >
+            <Pressable
+              onPress={() =>
+                setMenuSourceId((current) =>
+                  current === source.id ? null : source.id
+                )
+              }
+              style={({ pressed }) => [
+                styles.sourceMenuButton,
+                pressed && styles.pressedScale,
+              ]}
+              hitSlop={10}
+            >
+              <IconDots color="#1A1C1C" />
+            </Pressable>
+
+            {menuSourceId === source.id ? (
+              <View style={styles.sourceMenu}>
+                <Pressable
+                  onPress={() => openRenameSource(source)}
+                  style={({ pressed }) => [
+                    styles.sourceMenuItem,
+                    pressed && styles.menuItemPressed,
+                  ]}
+                >
+                  <Text style={styles.sourceMenuText}>Rename Source</Text>
+                </Pressable>
+
+                <Pressable
+                  onPress={() => handleDownloadSource(source)}
+                  style={({ pressed }) => [
+                    styles.sourceMenuItem,
+                    pressed && styles.menuItemPressed,
+                  ]}
+                >
+                  <Text style={styles.sourceMenuText}>Download</Text>
+                </Pressable>
+
+                <Pressable
+                  onPress={() => {
+                    setSourceToRemove(source);
+                    setMenuSourceId(null);
+                  }}
+                  style={({ pressed }) => [
+                    styles.sourceMenuItem,
+                    pressed && styles.menuItemPressed,
+                  ]}
+                >
+                  <Text style={styles.sourceMenuDangerText}>Remove Resource</Text>
+                </Pressable>
+              </View>
+            ) : null}
+
             <View style={styles.pdfIconCircle}>
               <IconPDF color="#93000A" size={20} />
             </View>
@@ -132,26 +473,171 @@ function SourcesTab({ book }: { book: Book }) {
             <Text style={styles.sourceName} numberOfLines={1}>
               {source.name}
             </Text>
-          </View>
-        ))}
-      </View>
-    </ScrollView>
+
+            <Text
+              style={[
+                styles.sourceStatus,
+                source.processingStatus === 'ready' && styles.readyStatus,
+                source.processingStatus === 'failed' && styles.failedStatus,
+              ]}
+              numberOfLines={2}
+            >
+              {formatProcessingStatus(source)}
+            </Text>
+            </View>
+          ))}
+        </View>
+      </ScrollView>
+
+      <BottomSheet
+        visible={Boolean(sourceToRename)}
+        onClose={() => {
+          setSourceToRename(null);
+          setRenameValue('');
+        }}
+        title="Rename source"
+        snapPoints={['38%']}
+      >
+        <View style={styles.confirmContent}>
+          <Text style={styles.confirmText}>
+            Choose a simple name your class will recognize.
+          </Text>
+
+          <TextInput
+            value={renameValue}
+            onChangeText={setRenameValue}
+            placeholder="Source name"
+            placeholderTextColor="#747685"
+            style={styles.renameInput}
+            autoCapitalize="sentences"
+            returnKeyType="done"
+            onSubmitEditing={handleRenameSource}
+          />
+
+          <Pressable
+            onPress={handleRenameSource}
+            disabled={isRenamingSource || !renameValue.trim()}
+            style={({ pressed }) => [
+              styles.saveButton,
+              pressed && styles.pressedScale,
+            ]}
+          >
+            <Text style={styles.saveButtonText}>
+              {isRenamingSource ? 'Saving...' : 'Save Name'}
+            </Text>
+          </Pressable>
+        </View>
+      </BottomSheet>
+
+      <BottomSheet
+        visible={Boolean(sourceToRemove)}
+        onClose={() => setSourceToRemove(null)}
+        title="Remove source?"
+        snapPoints={['34%']}
+      >
+        <View style={styles.confirmContent}>
+          <Text style={styles.confirmText}>
+            This removes the PDF from this book and clears its saved study
+            knowledge from ALAB.
+          </Text>
+
+          <Pressable
+            onPress={handleRemoveSource}
+            disabled={isRemovingSource}
+            style={({ pressed }) => [
+              styles.removeButton,
+              pressed && styles.pressedScale,
+            ]}
+          >
+            <Text style={styles.removeButtonText}>
+              {isRemovingSource ? 'Removing...' : 'Remove Source'}
+            </Text>
+          </Pressable>
+
+          <Pressable
+            onPress={() => setSourceToRemove(null)}
+            style={({ pressed }) => [
+              styles.keepButton,
+              pressed && styles.pressedScale,
+            ]}
+          >
+            <Text style={styles.keepButtonText}>Keep Source</Text>
+          </Pressable>
+        </View>
+      </BottomSheet>
+    </>
   );
 }
 
-function ChatTab({ book }: { book: Book }) {
+function formatProcessingStatus(source: Source) {
+  switch (source.processingStatus) {
+    case 'pending':
+      return 'Analyzing...';
+    case 'extracting':
+      return 'Reading PDF...';
+    case 'chunking':
+      return 'Preparing lesson...';
+    case 'embedding':
+      return 'Preparing study helper...';
+    case 'ready':
+      return 'Ready to study';
+    case 'failed':
+      return source.processingError ?? 'Processing failed';
+    default:
+      return 'Saved source';
+  }
+}
+
+function ChatTab({
+  book,
+  pendingPrompt,
+  onPromptHandled,
+}: {
+  book: Book;
+  pendingPrompt: PendingChatPrompt | null;
+  onPromptHandled: () => void;
+}) {
   const { width } = useWindowDimensions();
   const isTablet = width >= 700;
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
   const [isTyping, setIsTyping] = useState(false);
+  const [activeStudyMessage, setActiveStudyMessage] = useState<ChatMessage | null>(
+    null
+  );
+  const offlineAi = useOfflineAi(book.id, book.title);
 
-  const scrollRef = useRef<ScrollView>(null);
+  const scrollRef = useRef<KeyboardAwareScrollViewRef>(null);
 
-  const handleSend = () => {
-    if (!input.trim()) return;
+  const refreshMessages = useCallback(async () => {
+    const savedMessages = await listRecentChatMessagesByBook(book.id);
+    setMessages(savedMessages.map(mapStoredChatMessage));
+  }, [book.id]);
 
-    const question = input.trim();
+  useEffect(() => {
+    let isActive = true;
+
+    listRecentChatMessagesByBook(book.id)
+      .then((savedMessages) => {
+        if (isActive) {
+          setMessages(savedMessages.map(mapStoredChatMessage));
+        }
+      })
+      .catch(() => {
+        if (isActive) {
+          setMessages([]);
+        }
+      });
+
+    return () => {
+      isActive = false;
+    };
+  }, [book.id]);
+
+  const handleSend = useCallback(async (promptText?: string) => {
+    const question = (promptText ?? input).trim();
+
+    if (!question) return;
 
     const userMessage: ChatMessage = {
       id: Date.now().toString(),
@@ -160,20 +646,91 @@ function ChatTab({ book }: { book: Book }) {
     };
 
     setMessages((previous) => [...previous, userMessage]);
+    await appendChatMessage(book.id, {
+      role: 'user',
+      text: question,
+      kind: 'answer',
+    });
     setInput('');
     setIsTyping(true);
 
-    setTimeout(() => {
+    try {
+      const isReadingSources = await hasProcessingSources(book.id);
+
+      if (isReadingSources) {
+        const statusMessage: ChatMessage = {
+          id: String(Date.now() + 1),
+          role: 'ai',
+          text: 'ALAB is reading the PDF. Please wait...',
+          kind: 'status',
+        };
+
+        setMessages((previous) => [...previous, statusMessage]);
+        await appendChatMessage(book.id, {
+          role: 'ai',
+          text: statusMessage.text,
+          kind: 'status',
+        });
+        await refreshMessages();
+        return;
+      }
+
+      const intent = getStudyToolIntent(question);
+      const waitingMessage = intent
+        ? intent === 'quiz'
+          ? 'ALAB is preparing this quiz from your lesson. Please wait...'
+          : 'ALAB is preparing these flashcards from your lesson. Please wait...'
+        : null;
+
+      if (waitingMessage) {
+        setMessages((previous) => [
+          ...previous,
+          {
+            id: `waiting-${Date.now()}`,
+            role: 'ai',
+            text: waitingMessage,
+            kind: 'status',
+          },
+        ]);
+      }
+
+      const answer = intent
+        ? await offlineAi.generateStudyTool(intent)
+        : await offlineAi.answerQuestion(question);
       const aiMessage: ChatMessage = {
         id: String(Date.now() + 1),
         role: 'ai',
-        text: `Great question about "${book.title}"! Based on your uploaded sources, I can help you understand this topic. Ask me to explain a concept, create a quiz, or give you a simpler explanation!`,
+        text: answer.text,
+        sources: answer.sources,
+        kind: intent ?? 'answer',
+      };
+
+      await appendChatMessage(book.id, {
+        role: 'ai',
+        text: aiMessage.text,
+        sources: aiMessage.sources,
+        kind: aiMessage.kind,
+      });
+      await refreshMessages();
+    } catch {
+      const aiMessage: ChatMessage = {
+        id: String(Date.now() + 1),
+        role: 'ai',
+        text: 'Something went wrong while ALAB was preparing the offline answer. Please try again.',
+        kind: 'status',
       };
 
       setMessages((previous) => [...previous, aiMessage]);
+      await appendChatMessage(book.id, {
+        role: 'ai',
+        text: aiMessage.text,
+        kind: 'status',
+      });
+      await refreshMessages();
+    } finally {
       setIsTyping(false);
-    }, 1000);
-  };
+    }
+  }, [book.id, input, offlineAi, refreshMessages]);
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -183,14 +740,36 @@ function ChatTab({ book }: { book: Book }) {
     return () => clearTimeout(timer);
   }, [messages, isTyping]);
 
+  useEffect(() => {
+    if (!pendingPrompt) {
+      return;
+    }
+
+    handleSend(pendingPrompt.text);
+    onPromptHandled();
+  }, [handleSend, onPromptHandled, pendingPrompt]);
+
+  if (activeStudyMessage) {
+    return (
+      <StudyToolPanel
+        message={activeStudyMessage}
+        onClose={() => setActiveStudyMessage(null)}
+      />
+    );
+  }
+
   return (
     <KeyboardAvoidingView
       style={styles.chatRoot}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      keyboardVerticalOffset={Platform.OS === 'ios' ? 8 : 0}
     >
-      <ScrollView
+      <KeyboardAwareScrollView
         ref={scrollRef}
         style={styles.chatScroll}
+        bottomOffset={86}
+        extraKeyboardSpace={28}
+        keyboardShouldPersistTaps="handled"
         contentContainerStyle={[
           styles.chatContent,
           isTablet && styles.tabletTabContent,
@@ -204,6 +783,10 @@ function ChatTab({ book }: { book: Book }) {
             <Text style={styles.chatIntroText}>
               I only use the lessons your teacher uploaded. Ask me anything,
               request a quiz, or ask for a simpler explanation.
+            </Text>
+
+            <Text style={styles.aiStatusText}>
+              {formatAiStatus(offlineAi)}
             </Text>
           </View>
         ) : (
@@ -219,14 +802,48 @@ function ChatTab({ book }: { book: Book }) {
                     isUser ? styles.messageRowUser : styles.messageRowAI,
                   ]}
                 >
-                  <Text
+                  <View
                     style={[
                       styles.messageBubble,
                       isUser ? styles.userBubble : styles.aiBubble,
                     ]}
                   >
-                    {message.text}
-                  </Text>
+                    {isUser ? (
+                      <Text style={[styles.messageText, styles.userMessageText]}>
+                        {message.text}
+                      </Text>
+                    ) : (
+                      <RenderedMarkdown text={message.text} />
+                    )}
+
+                    {!isUser && message.sources && message.sources.length > 0 ? (
+                      <View style={styles.sourcesUsed}>
+                        <Text style={styles.sourcesUsedTitle}>Sources used</Text>
+                        {message.sources.map((source) => (
+                          <Text key={source} style={styles.sourcesUsedText}>
+                            {source}
+                          </Text>
+                        ))}
+                      </View>
+                    ) : null}
+
+                    {!isUser &&
+                    (message.kind === 'quiz' || message.kind === 'flashcards') ? (
+                      <Pressable
+                        onPress={() => setActiveStudyMessage(message)}
+                        style={({ pressed }) => [
+                          styles.studyResultButton,
+                          pressed && styles.pressedScale,
+                        ]}
+                      >
+                        <Text style={styles.studyResultButtonText}>
+                          {message.kind === 'quiz'
+                            ? 'Quiz is ready. Tap to open.'
+                            : 'Flashcards are ready. Tap to open.'}
+                        </Text>
+                      </Pressable>
+                    ) : null}
+                  </View>
                 </View>
               );
             })}
@@ -234,13 +851,13 @@ function ChatTab({ book }: { book: Book }) {
             {isTyping ? (
               <View style={[styles.messageRow, styles.messageRowAI]}>
                 <View style={styles.typingBubble}>
-                  <Text style={styles.typingText}>•••</Text>
+                  <TypingDots />
                 </View>
               </View>
             ) : null}
           </View>
         )}
-      </ScrollView>
+      </KeyboardAwareScrollView>
 
       <View style={styles.chatInputArea}>
         <View style={styles.chatInputBar}>
@@ -251,10 +868,15 @@ function ChatTab({ book }: { book: Book }) {
             placeholderTextColor="#747685"
             style={styles.chatInput}
             returnKeyType="send"
-            onSubmitEditing={handleSend}
+            onSubmitEditing={() => handleSend()}
+            onFocus={() => {
+              setTimeout(() => {
+                scrollRef.current?.scrollToEnd({ animated: true });
+              }, 120);
+            }}
           />
 
-          <Pressable onPress={handleSend} style={styles.sendButton}>
+          <Pressable onPress={() => handleSend()} style={styles.sendButton}>
             <IconSend color="#ffffff" size={13.3} />
           </Pressable>
         </View>
@@ -263,112 +885,441 @@ function ChatTab({ book }: { book: Book }) {
   );
 }
 
-function ToolsTab({ book }: { book: Book }) {
+function mapStoredChatMessage(message: StoredChatMessage): ChatMessage {
+  return {
+    id: message.id,
+    role: message.role,
+    text: message.text,
+    sources: message.sources,
+    kind: message.kind,
+  };
+}
+
+function parseBoldSegments(text: string): MarkdownSegment[] {
+  const segments: MarkdownSegment[] = [];
+  const pattern = /\*\*(.*?)\*\*/g;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = pattern.exec(text))) {
+    if (match.index > lastIndex) {
+      segments.push({ text: text.slice(lastIndex, match.index), bold: false });
+    }
+
+    segments.push({ text: match[1], bold: true });
+    lastIndex = match.index + match[0].length;
+  }
+
+  if (lastIndex < text.length) {
+    segments.push({ text: text.slice(lastIndex), bold: false });
+  }
+
+  return segments.length > 0 ? segments : [{ text, bold: false }];
+}
+
+function renderInlineText(text: string, colorStyle = styles.aiMessageText) {
+  return parseBoldSegments(text).map((segment, index) => (
+    <Text
+      key={`${segment.text}-${index}`}
+      style={[colorStyle, segment.bold && styles.markdownBold]}
+    >
+      {segment.text}
+    </Text>
+  ));
+}
+
+function RenderedMarkdown({ text }: { text: string }) {
+  const lines = text
+    .replace(/\r/g, '\n')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  if (lines.length === 0) {
+    return null;
+  }
+
+  return (
+    <View style={styles.markdownBlock}>
+      {lines.map((line, index) => {
+        const heading = line.match(/^(#{1,3})\s+(.+)$/);
+        const bullet = line.match(/^[-*]\s+(.+)$/);
+        const numbered = line.match(/^(\d+)[.)]\s+(.+)$/);
+        const cleanLine = line.replace(/\*\*/g, '').trim();
+
+        if (heading) {
+          return (
+            <Text
+              key={`${line}-${index}`}
+              style={[
+                styles.markdownHeading,
+                heading[1].length > 1 && styles.markdownSubheading,
+              ]}
+            >
+              {renderInlineText(heading[2])}
+            </Text>
+          );
+        }
+
+        if (bullet || numbered) {
+          const marker = numbered ? `${numbered[1]}.` : '-';
+          const body = bullet?.[1] ?? numbered?.[2] ?? cleanLine;
+
+          return (
+            <View key={`${line}-${index}`} style={styles.markdownListRow}>
+              <Text style={styles.markdownListMarker}>{marker}</Text>
+              <Text style={styles.markdownParagraph}>
+                {renderInlineText(body)}
+              </Text>
+            </View>
+          );
+        }
+
+        return (
+          <Text key={`${line}-${index}`} style={styles.markdownParagraph}>
+            {renderInlineText(cleanLine)}
+          </Text>
+        );
+      })}
+    </View>
+  );
+}
+
+function parseQuizQuestions(text: string): QuizQuestion[] {
+  const blocks = text
+    .split(/\n\s*\n|(?=Question\s*\d*[:.])/i)
+    .map((block) => block.trim())
+    .filter(Boolean);
+
+  const questions = blocks
+    .map<QuizQuestion | null>((block) => {
+      const lines = block
+        .split('\n')
+        .map((line) => line.trim())
+        .filter(Boolean);
+      const questionLine = lines.find((line) => /^question/i.test(line)) ?? lines[0];
+      const question = questionLine
+        .replace(/^question\s*\d*\s*[:.)-]?\s*/i, '')
+        .trim();
+      const options = lines
+        .filter((line) => /^[A-D][.)]\s+/i.test(line))
+        .map((line) => line.replace(/^[A-D][.)]\s+/i, '').trim());
+      const answerLine = lines.find((line) => /^correct answer|^answer/i.test(line));
+      const explanationLine = lines.find((line) => /^explanation/i.test(line));
+
+      if (!question) {
+        return null;
+      }
+
+      const parsedQuestion: QuizQuestion = {
+        question,
+        options,
+        answer: answerLine
+          ? answerLine.replace(/^correct answer\s*[:.)-]?|^answer\s*[:.)-]?/i, '').trim()
+          : '',
+      };
+
+      if (explanationLine) {
+        parsedQuestion.explanation = explanationLine
+          .replace(/^explanation\s*[:.)-]?/i, '')
+          .trim();
+      }
+
+      return parsedQuestion;
+    })
+    .filter((question): question is QuizQuestion => Boolean(question));
+
+  return questions.length > 0
+    ? questions
+    : [{ question: text.trim(), options: [], answer: '', explanation: undefined }];
+}
+
+function parseFlashcards(text: string) {
+  const lines = text
+    .replace(/\r/g, '\n')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const cards: { front: string; back: string }[] = [];
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const frontLine = lines[index];
+    const backLine = lines[index + 1];
+
+    if (/^front\s*:/i.test(frontLine) && /^back\s*:/i.test(backLine ?? '')) {
+      cards.push({
+        front: frontLine.replace(/^front\s*:/i, '').trim(),
+        back: backLine.replace(/^back\s*:/i, '').trim(),
+      });
+      index += 1;
+    }
+  }
+
+  if (cards.length > 0) {
+    return cards;
+  }
+
+  return lines.map((line, index) => ({
+    front: `Card ${index + 1}`,
+    back: line.replace(/^[-*]\s+/, ''),
+  }));
+}
+
+function StudyToolPanel({
+  message,
+  onClose,
+}: {
+  message: ChatMessage;
+  onClose: () => void;
+}) {
+  const isQuiz = message.kind === 'quiz';
+
+  return (
+    <View style={styles.studyPanel}>
+      <View style={styles.studyPanelHeader}>
+        <View>
+          <Text style={styles.quizCounter}>{isQuiz ? 'QUIZ' : 'FLASHCARDS'}</Text>
+          <Text style={styles.studyPanelTitle}>
+            {isQuiz ? 'Practice quiz' : 'Review cards'}
+          </Text>
+        </View>
+
+        <Pressable
+          onPress={onClose}
+          style={({ pressed }) => [
+            styles.studyPanelClose,
+            pressed && styles.pressedScale,
+          ]}
+        >
+          <Text style={styles.studyPanelCloseText}>X</Text>
+        </Pressable>
+      </View>
+
+      {isQuiz ? (
+        <QuizPanelContent text={message.text} />
+      ) : (
+        <FlashcardPanelContent text={message.text} />
+      )}
+    </View>
+  );
+}
+
+function QuizPanelContent({ text }: { text: string }) {
+  const questions = parseQuizQuestions(text);
+  const [selectedAnswers, setSelectedAnswers] = useState<Record<number, string>>({});
+
+  return (
+    <ScrollView
+      style={styles.tabScroll}
+      contentContainerStyle={styles.quizContent}
+      showsVerticalScrollIndicator={false}
+    >
+      {questions.map((question, questionIndex) => {
+        const selectedAnswer = selectedAnswers[questionIndex];
+
+        return (
+          <View key={`${question.question}-${questionIndex}`} style={styles.quizCard}>
+            <Text style={styles.quizQuestion}>{question.question}</Text>
+
+            {question.options.length > 0 ? (
+              <View style={styles.optionList}>
+                {question.options.map((option, optionIndex) => {
+                  const optionLetter = String.fromCharCode(65 + optionIndex);
+                  const isSelected = selectedAnswer === option;
+                  const isCorrect =
+                    Boolean(selectedAnswer) &&
+                    (question.answer.toLowerCase().startsWith(optionLetter.toLowerCase()) ||
+                      question.answer.toLowerCase() === option.toLowerCase());
+
+                  return (
+                    <Pressable
+                      key={option}
+                      onPress={() =>
+                        setSelectedAnswers((current) => ({
+                          ...current,
+                          [questionIndex]: option,
+                        }))
+                      }
+                      style={({ pressed }) => [
+                        styles.optionButton,
+                        isSelected && !isCorrect && styles.wrongOption,
+                        isCorrect && styles.correctOption,
+                        pressed && styles.pressedScale,
+                      ]}
+                    >
+                      <Text style={styles.optionText}>
+                        {optionLetter}. {option}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            ) : (
+              <Text style={styles.quizOpenAnswer}>
+                Write your answer in your notebook, then compare it with the ALAB
+                guide below.
+              </Text>
+            )}
+
+            {selectedAnswer || question.options.length === 0 ? (
+              <View style={styles.answerCard}>
+                {question.answer ? (
+                  <Text style={styles.answerText}>Answer: {question.answer}</Text>
+                ) : null}
+                {question.explanation ? (
+                  <Text style={styles.answerExplanation}>
+                    {question.explanation}
+                  </Text>
+                ) : null}
+              </View>
+            ) : null}
+          </View>
+        );
+      })}
+    </ScrollView>
+  );
+}
+
+function FlashcardPanelContent({ text }: { text: string }) {
+  const cards = parseFlashcards(text);
+  const [flippedCards, setFlippedCards] = useState<Record<number, boolean>>({});
+
+  return (
+    <ScrollView
+      style={styles.tabScroll}
+      contentContainerStyle={styles.quizContent}
+      showsVerticalScrollIndicator={false}
+    >
+      {cards.map((card, index) => {
+        const isFlipped = flippedCards[index];
+
+        return (
+          <Pressable
+            key={`${card.front}-${index}`}
+            onPress={() =>
+              setFlippedCards((current) => ({
+                ...current,
+                [index]: !current[index],
+              }))
+            }
+            style={({ pressed }) => [
+              styles.flashcardReviewCard,
+              pressed && styles.pressedScale,
+            ]}
+          >
+            <Text style={styles.quizCounter}>CARD {index + 1}</Text>
+            <Text style={styles.flashcardReviewText}>
+              {isFlipped ? card.back : card.front}
+            </Text>
+            <Text style={styles.flashcardHint}>
+              {isFlipped ? 'Tap to see the front' : 'Tap to reveal the answer'}
+            </Text>
+          </Pressable>
+        );
+      })}
+    </ScrollView>
+  );
+}
+
+function getStudyToolIntent(question: string): 'quiz' | 'flashcards' | null {
+  const normalized = question.toLowerCase();
+
+  if (normalized.includes('quiz')) {
+    return 'quiz';
+  }
+
+  if (
+    normalized.includes('flashcard') ||
+    normalized.includes('flash card') ||
+    normalized.includes('review card')
+  ) {
+    return 'flashcards';
+  }
+
+  return null;
+}
+
+function TypingDots() {
+  const dotOne = useRef(new Animated.Value(0)).current;
+  const dotTwo = useRef(new Animated.Value(0)).current;
+  const dotThree = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    const makeWave = (value: Animated.Value, delay: number) =>
+      Animated.loop(
+        Animated.sequence([
+          Animated.delay(delay),
+          Animated.timing(value, {
+            toValue: -4,
+            duration: 220,
+            useNativeDriver: true,
+          }),
+          Animated.timing(value, {
+            toValue: 0,
+            duration: 220,
+            useNativeDriver: true,
+          }),
+          Animated.delay(260),
+        ])
+      );
+
+    const animation = Animated.parallel([
+      makeWave(dotOne, 0),
+      makeWave(dotTwo, 120),
+      makeWave(dotThree, 240),
+    ]);
+
+    animation.start();
+
+    return () => animation.stop();
+  }, [dotOne, dotThree, dotTwo]);
+
+  return (
+    <View style={styles.typingDots}>
+      {[dotOne, dotTwo, dotThree].map((dot, index) => (
+        <Animated.View
+          key={index}
+          style={[
+            styles.typingDot,
+            {
+              transform: [{ translateY: dot }],
+            },
+          ]}
+        />
+      ))}
+    </View>
+  );
+}
+
+function formatAiStatus(offlineAi: ReturnType<typeof useOfflineAi>) {
+  if (!offlineAi.isAvailable) {
+    return 'The study helper is not available in this preview yet.';
+  }
+
+  if (offlineAi.error) {
+    return 'The study helper could not start on this device.';
+  }
+
+  if (!offlineAi.isModelReady) {
+    const progress = Math.round(offlineAi.llmDownloadProgress * 100);
+    return `The study helper is getting ready${progress > 0 ? ` (${progress}%)` : ''}.`;
+  }
+
+  if (!offlineAi.isEmbeddingReady) {
+    const progress = Math.round(offlineAi.embeddingDownloadProgress * 100);
+    return `Lesson search is getting ready${progress > 0 ? ` (${progress}%)` : ''}.`;
+  }
+
+  return 'Ready to study from your sources.';
+}
+
+function ToolsTab({
+  onPrompt,
+}: {
+  onPrompt: (prompt: string) => void;
+}) {
   const { width } = useWindowDimensions();
   const isTablet = width >= 700;
-  const [quizActive, setQuizActive] = useState(false);
-  const [quizStep, setQuizStep] = useState(0);
-  const [selectedAnswer, setSelectedAnswer] = useState<number | null>(null);
-
-  const sampleQuiz = [
-    {
-      question: `What is a key concept covered in "${book.title}"?`,
-      options: [
-        'States of Matter',
-        'Long Division',
-        'Sentence Structure',
-        'Philippine History',
-      ],
-      correct: 0,
-    },
-    {
-      question: 'Which of the following best describes energy?',
-      options: [
-        'The ability to do work',
-        'A type of solid',
-        'A chemical element',
-        'A form of light only',
-      ],
-      correct: 0,
-    },
-  ];
-
-  if (quizActive) {
-    const question = sampleQuiz[quizStep % sampleQuiz.length];
-    const isLast = quizStep >= sampleQuiz.length - 1;
-
-    return (
-      <ScrollView
-        style={styles.tabScroll}
-        contentContainerStyle={[
-          styles.quizContent,
-          isTablet && styles.tabletTabContent,
-        ]}
-        showsVerticalScrollIndicator={false}
-      >
-        <View style={styles.quizTopRow}>
-          <Text style={styles.quizCounter}>
-            QUESTION {Math.min(quizStep + 1, sampleQuiz.length)} /{' '}
-            {sampleQuiz.length}
-          </Text>
-
-          <Pressable
-            onPress={() => {
-              setQuizActive(false);
-              setQuizStep(0);
-              setSelectedAnswer(null);
-            }}
-          >
-            <Text style={styles.exitQuiz}>Exit Quiz</Text>
-          </Pressable>
-        </View>
-
-        <View style={styles.quizCard}>
-          <Text style={styles.quizQuestion}>{question.question}</Text>
-
-          <View style={styles.optionList}>
-            {question.options.map((option, index) => {
-              const isCorrect =
-                selectedAnswer !== null && index === question.correct;
-              const isWrong =
-                selectedAnswer === index && index !== question.correct;
-
-              return (
-                <Pressable
-                  key={option}
-                  onPress={() => {
-                    if (selectedAnswer !== null) return;
-
-                    setSelectedAnswer(index);
-
-                    setTimeout(() => {
-                      if (isLast) {
-                        setQuizActive(false);
-                        setQuizStep(0);
-                      } else {
-                        setQuizStep((step) => step + 1);
-                      }
-
-                      setSelectedAnswer(null);
-                    }, 800);
-                  }}
-                  style={[
-                    styles.optionButton,
-                    isCorrect && styles.correctOption,
-                    isWrong && styles.wrongOption,
-                  ]}
-                >
-                  <Text style={styles.optionText}>
-                    {String.fromCharCode(65 + index)}. {option}
-                  </Text>
-                </Pressable>
-              );
-            })}
-          </View>
-        </View>
-      </ScrollView>
-    );
-  }
 
   return (
     <ScrollView
@@ -390,10 +1341,7 @@ function ToolsTab({ book }: { book: Book }) {
 
       <View style={[styles.toolCards, isTablet && styles.tabletToolCards]}>
         <Pressable
-          onPress={() => {
-            setQuizActive(true);
-            setQuizStep(0);
-          }}
+          onPress={() => onPrompt('May I kindly ask for a Quiz please')}
           style={({ pressed }) => [
             styles.toolCard,
             isTablet && styles.tabletToolCard,
@@ -419,6 +1367,7 @@ function ToolsTab({ book }: { book: Book }) {
         </Pressable>
 
         <Pressable
+          onPress={() => onPrompt('May I kindly ask for a Flashcard please')}
           style={({ pressed }) => [
             styles.toolCard,
             isTablet && styles.tabletToolCard,
@@ -443,6 +1392,15 @@ function ToolsTab({ book }: { book: Book }) {
           </View>
         </Pressable>
       </View>
+
+      <View style={styles.generatedToolCard}>
+        <Text style={styles.generatedToolTitle}>Opened in ALAB Chat</Text>
+
+        <Text style={styles.generatedToolText}>
+          Choose a tool and ALAB Chat will ask politely, then make it from your
+          lesson sources.
+        </Text>
+      </View>
     </ScrollView>
   );
 }
@@ -456,6 +1414,14 @@ export function BookPage({ book, onBack }: BookPageProps) {
   const { width } = useWindowDimensions();
   const isTablet = width >= 700;
   const [activeTab, setActiveTab] = useState<BookTab>('sources');
+  const [pendingPrompt, setPendingPrompt] = useState<PendingChatPrompt | null>(
+    null
+  );
+
+  const sendToolPrompt = (text: string) => {
+    setActiveTab('chat');
+    setPendingPrompt({ id: Date.now(), text });
+  };
 
   return (
     <Screen style={styles.screen}>
@@ -472,8 +1438,14 @@ export function BookPage({ book, onBack }: BookPageProps) {
 
       <View style={styles.tabContent}>
         {activeTab === 'sources' && <SourcesTab book={book} />}
-        {activeTab === 'chat' && <ChatTab book={book} />}
-        {activeTab === 'tools' && <ToolsTab book={book} />}
+        {activeTab === 'chat' && (
+          <ChatTab
+            book={book}
+            pendingPrompt={pendingPrompt}
+            onPromptHandled={() => setPendingPrompt(null)}
+          />
+        )}
+        {activeTab === 'tools' && <ToolsTab onPrompt={sendToolPrompt} />}
       </View>
 
       <BookBottomNav activeTab={activeTab} onTabChange={setActiveTab} />
@@ -520,7 +1492,7 @@ const styles = StyleSheet.create({
   },
   tabContent: {
     flex: 1,
-    overflow: 'hidden',
+    overflow: 'visible',
   },
   tabScroll: {
     flex: 1,
@@ -593,8 +1565,11 @@ const styles = StyleSheet.create({
   },
   sourceList: {
     gap: 10,
+    overflow: 'visible',
+    zIndex: 1,
   },
   sourceCard: {
+    position: 'relative',
     alignItems: 'center',
     gap: 4,
     padding: 9,
@@ -607,6 +1582,59 @@ const styles = StyleSheet.create({
     shadowRadius: 4,
     shadowOffset: { width: 0, height: 2 },
     elevation: 1,
+    zIndex: 1,
+  },
+  activeSourceCard: {
+    zIndex: 1000,
+    elevation: 1000,
+  },
+  sourceMenuButton: {
+    position: 'absolute',
+    top: 8,
+    right: 8,
+    zIndex: 1002,
+    elevation: 1002,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 12,
+  },
+  sourceMenu: {
+    position: 'absolute',
+    top: 34,
+    right: 8,
+    zIndex: 1001,
+    width: 168,
+    padding: 8,
+    borderRadius: 12,
+    backgroundColor: '#ffffff',
+    borderWidth: 1,
+    borderColor: 'rgba(196,197,213,0.4)',
+    shadowColor: '#000',
+    shadowOpacity: 0.12,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 1001,
+  },
+  sourceMenuItem: {
+    minHeight: 40,
+    borderRadius: 8,
+    justifyContent: 'center',
+    paddingHorizontal: 10,
+  },
+  menuItemPressed: {
+    backgroundColor: '#f4f5f7',
+  },
+  sourceMenuText: {
+    color: '#1a1c1c',
+    fontSize: 14,
+    lineHeight: 20,
+    fontWeight: '600',
+  },
+  sourceMenuDangerText: {
+    color: '#93000A',
+    fontSize: 14,
+    lineHeight: 20,
+    fontWeight: '600',
   },
   pdfIconCircle: {
     width: 40,
@@ -623,6 +1651,20 @@ const styles = StyleSheet.create({
     lineHeight: 16,
     fontWeight: '500',
     letterSpacing: 0.6,
+  },
+  sourceStatus: {
+    maxWidth: '100%',
+    color: '#747685',
+    fontSize: 11,
+    lineHeight: 15,
+    fontWeight: '500',
+    textAlign: 'center',
+  },
+  readyStatus: {
+    color: '#166534',
+  },
+  failedStatus: {
+    color: '#93000A',
   },
   chatRoot: {
     flex: 1,
@@ -650,6 +1692,13 @@ const styles = StyleSheet.create({
     lineHeight: 20,
     fontWeight: '400',
   },
+  aiStatusText: {
+    color: '#747685',
+    fontSize: 12,
+    lineHeight: 18,
+    fontWeight: '500',
+    marginTop: 4,
+  },
   messageList: {
     gap: 12,
   },
@@ -666,9 +1715,6 @@ const styles = StyleSheet.create({
     maxWidth: '80%',
     paddingHorizontal: 16,
     paddingVertical: 12,
-    fontSize: 14,
-    lineHeight: 20,
-    fontWeight: '400',
     borderRadius: 16,
     shadowColor: '#000',
     shadowOpacity: 0.06,
@@ -678,31 +1724,152 @@ const styles = StyleSheet.create({
   },
   userBubble: {
     backgroundColor: '#0038a8',
-    color: '#ffffff',
     borderBottomRightRadius: 4,
   },
   aiBubble: {
     backgroundColor: '#ffffff',
-    color: '#444653',
     borderBottomLeftRadius: 4,
+  },
+  messageText: {
+    fontSize: 14,
+    lineHeight: 20,
+    fontWeight: '400',
+  },
+  userMessageText: {
+    color: '#ffffff',
+  },
+  aiMessageText: {
+    color: '#444653',
+  },
+  markdownBlock: {
+    gap: 6,
+  },
+  markdownHeading: {
+    color: '#002576',
+    fontSize: 18,
+    lineHeight: 24,
+    fontWeight: '700',
+  },
+  markdownSubheading: {
+    fontSize: 16,
+    lineHeight: 22,
+  },
+  markdownParagraph: {
+    color: '#444653',
+    fontSize: 14,
+    lineHeight: 20,
+    fontWeight: '400',
+  },
+  markdownBold: {
+    fontWeight: '700',
+  },
+  markdownListRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  markdownListMarker: {
+    width: 24,
+    color: '#0038a8',
+    fontSize: 14,
+    lineHeight: 20,
+    fontWeight: '700',
+  },
+  sourcesUsed: {
+    marginTop: 10,
+    paddingTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(196,197,213,0.5)',
+    gap: 4,
+  },
+  sourcesUsedTitle: {
+    color: '#002576',
+    fontSize: 12,
+    lineHeight: 16,
+    fontWeight: '700',
+  },
+  sourcesUsedText: {
+    color: '#747685',
+    fontSize: 12,
+    lineHeight: 16,
+    fontWeight: '500',
+  },
+  studyResultButton: {
+    marginTop: 12,
+    minHeight: 42,
+    borderRadius: 12,
+    backgroundColor: '#eef2ff',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 14,
+  },
+  studyResultButtonText: {
+    color: '#002576',
+    fontSize: 14,
+    lineHeight: 20,
+    fontWeight: '700',
   },
   typingBubble: {
     paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingVertical: 14,
     backgroundColor: '#ffffff',
     borderRadius: 16,
     borderBottomLeftRadius: 4,
   },
-  typingText: {
-    color: '#747685',
-    fontSize: 18,
-    letterSpacing: 2,
+  typingDots: {
+    width: 42,
+    minHeight: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 5,
+  },
+  typingDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+    backgroundColor: '#747685',
   },
   chatInputArea: {
     paddingHorizontal: 20,
     paddingTop: 12,
     paddingBottom: 12,
     backgroundColor: '#f9f9f9',
+  },
+  studyPanel: {
+    flex: 1,
+    backgroundColor: '#f8f8f8',
+  },
+  studyPanelHeader: {
+    paddingHorizontal: 20,
+    paddingTop: 14,
+    paddingBottom: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(196,197,213,0.25)',
+  },
+  studyPanelTitle: {
+    color: '#002576',
+    fontSize: 24,
+    lineHeight: 32,
+    fontWeight: '700',
+  },
+  studyPanelClose: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#ffffff',
+    borderWidth: 1,
+    borderColor: '#c4c5d5',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  studyPanelCloseText: {
+    color: '#1a1c1c',
+    fontSize: 16,
+    lineHeight: 20,
+    fontWeight: '700',
   },
   chatInputBar: {
     backgroundColor: '#e8e8e8',
@@ -835,6 +2002,86 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  generatedToolCard: {
+    padding: 18,
+    borderRadius: 12,
+    backgroundColor: '#ffffff',
+    borderWidth: 1,
+    borderColor: 'rgba(196,197,213,0.3)',
+    gap: 8,
+  },
+  generatedToolTitle: {
+    color: '#002576',
+    fontSize: 16,
+    lineHeight: 22,
+    fontWeight: '700',
+  },
+  generatedToolText: {
+    color: '#444653',
+    fontSize: 14,
+    lineHeight: 21,
+    fontWeight: '400',
+  },
+  confirmContent: {
+    gap: 12,
+  },
+  confirmText: {
+    color: '#444653',
+    fontSize: 15,
+    lineHeight: 22,
+    fontWeight: '400',
+  },
+  renameInput: {
+    minHeight: 52,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#c4c5d5',
+    backgroundColor: '#ffffff',
+    color: '#1a1c1c',
+    fontSize: 16,
+    lineHeight: 22,
+    fontWeight: '500',
+    paddingHorizontal: 14,
+  },
+  saveButton: {
+    minHeight: 50,
+    borderRadius: 12,
+    backgroundColor: '#002576',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  saveButtonText: {
+    color: '#ffffff',
+    fontSize: 16,
+    lineHeight: 22,
+    fontWeight: '700',
+  },
+  removeButton: {
+    minHeight: 50,
+    borderRadius: 12,
+    backgroundColor: '#E12531',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  removeButtonText: {
+    color: '#ffffff',
+    fontSize: 16,
+    lineHeight: 22,
+    fontWeight: '700',
+  },
+  keepButton: {
+    minHeight: 46,
+    borderRadius: 12,
+    backgroundColor: '#eeeeee',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  keepButtonText: {
+    color: '#1a1c1c',
+    fontSize: 15,
+    lineHeight: 20,
+    fontWeight: '700',
+  },
   quizContent: {
     paddingHorizontal: 20,
     paddingTop: 24,
@@ -869,6 +2116,31 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 4 },
     elevation: 2,
   },
+  answerCard: {
+    marginTop: 14,
+    borderRadius: 12,
+    backgroundColor: '#eef2ff',
+    padding: 14,
+    gap: 4,
+  },
+  answerText: {
+    color: '#002576',
+    fontSize: 14,
+    lineHeight: 20,
+    fontWeight: '700',
+  },
+  answerExplanation: {
+    color: '#444653',
+    fontSize: 14,
+    lineHeight: 20,
+    fontWeight: '400',
+  },
+  quizOpenAnswer: {
+    color: '#444653',
+    fontSize: 15,
+    lineHeight: 22,
+    fontWeight: '400',
+  },
   quizQuestion: {
     color: '#1a1c1c',
     fontSize: 18,
@@ -901,5 +2173,31 @@ const styles = StyleSheet.create({
     fontSize: 16,
     lineHeight: 24,
     fontWeight: '400',
+  },
+  flashcardReviewCard: {
+    minHeight: 168,
+    borderRadius: 16,
+    backgroundColor: '#ffffff',
+    borderWidth: 1,
+    borderColor: 'rgba(196,197,213,0.3)',
+    padding: 22,
+    justifyContent: 'space-between',
+    shadowColor: '#000',
+    shadowOpacity: 0.04,
+    shadowRadius: 16,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 2,
+  },
+  flashcardReviewText: {
+    color: '#1a1c1c',
+    fontSize: 20,
+    lineHeight: 28,
+    fontWeight: '700',
+  },
+  flashcardHint: {
+    color: '#747685',
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: '500',
   },
 });

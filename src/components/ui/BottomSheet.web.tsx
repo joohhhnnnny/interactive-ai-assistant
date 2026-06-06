@@ -1,5 +1,6 @@
-import { ReactNode } from 'react';
+import { ReactNode, useEffect, useRef, useState } from 'react';
 import {
+  Animated,
   Modal,
   Pressable,
   ScrollView,
@@ -22,12 +23,65 @@ export function BottomSheet({
   title,
   visible,
 }: BottomSheetProps) {
-  return (
-    <Modal transparent visible={visible} animationType="fade">
-      <View style={styles.root}>
-        <Pressable style={styles.backdrop} onPress={onClose} />
+  const [isMounted, setIsMounted] = useState(visible);
+  const backdropOpacity = useRef(new Animated.Value(0)).current;
+  const sheetTranslateY = useRef(new Animated.Value(360)).current;
 
-        <View style={styles.sheet}>
+  useEffect(() => {
+    if (visible) {
+      setIsMounted(true);
+      Animated.parallel([
+        Animated.timing(backdropOpacity, {
+          toValue: 1,
+          duration: 160,
+          useNativeDriver: true,
+        }),
+        Animated.spring(sheetTranslateY, {
+          toValue: 0,
+          damping: 26,
+          mass: 0.9,
+          stiffness: 240,
+          useNativeDriver: true,
+        }),
+      ]).start();
+      return;
+    }
+
+    Animated.parallel([
+      Animated.timing(backdropOpacity, {
+        toValue: 0,
+        duration: 140,
+        useNativeDriver: true,
+      }),
+      Animated.timing(sheetTranslateY, {
+        toValue: 360,
+        duration: 180,
+        useNativeDriver: true,
+      }),
+    ]).start(({ finished }) => {
+      if (finished) {
+        setIsMounted(false);
+      }
+    });
+  }, [backdropOpacity, sheetTranslateY, visible]);
+
+  if (!isMounted) {
+    return null;
+  }
+
+  return (
+    <Modal transparent visible={isMounted} animationType="none">
+      <View style={styles.root}>
+        <Animated.View style={[styles.backdrop, { opacity: backdropOpacity }]}>
+          <Pressable style={styles.backdropPressTarget} onPress={onClose} />
+        </Animated.View>
+
+        <Animated.View
+          style={[
+            styles.sheet,
+            { transform: [{ translateY: sheetTranslateY }] },
+          ]}
+        >
           <View style={styles.handle} />
 
           <View style={styles.header}>
@@ -44,7 +98,7 @@ export function BottomSheet({
           >
             {children}
           </ScrollView>
-        </View>
+        </Animated.View>
       </View>
     </Modal>
   );
@@ -62,6 +116,9 @@ const styles = StyleSheet.create({
     bottom: 0,
     left: 0,
     backgroundColor: 'rgba(0,0,0,0.32)',
+  },
+  backdropPressTarget: {
+    flex: 1,
   },
   sheet: {
     width: '100%',

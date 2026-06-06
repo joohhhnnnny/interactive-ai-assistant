@@ -1,4 +1,4 @@
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { IconChat, IconSources, IconTools } from '../icons/icons';
 
@@ -11,6 +11,9 @@ type BookBottomNavProps = {
 
 export function BookBottomNav({ activeTab, onTabChange }: BookBottomNavProps) {
   const insets = useSafeAreaInsets();
+  const { width } = useWindowDimensions();
+  const isNarrow = width < 360;
+  const isTablet = width >= 700;
 
   const tabs: { id: BookTab; label: string }[] = [
     { id: 'sources', label: 'Sources' },
@@ -23,7 +26,7 @@ export function BookBottomNav({ activeTab, onTabChange }: BookBottomNavProps) {
       style={[
         styles.nav,
         {
-          paddingBottom: Math.max(insets.bottom, 8),
+          paddingBottom: Math.max(insets.bottom, 4),
         },
       ]}
     >
@@ -38,6 +41,8 @@ export function BookBottomNav({ activeTab, onTabChange }: BookBottomNavProps) {
             onPress={() => onTabChange(tab.id)}
             style={({ pressed }) => [
               styles.tab,
+              isNarrow && styles.narrowTab,
+              isTablet && styles.tabletTab,
               isActive && styles.activeTab,
               pressed && styles.pressed,
             ]}
@@ -56,7 +61,14 @@ export function BookBottomNav({ activeTab, onTabChange }: BookBottomNavProps) {
               ) : null}
             </View>
 
-            <Text style={[styles.label, { color: textColor }]}>
+            <Text
+              style={[
+                styles.label,
+                isNarrow && styles.narrowLabel,
+                { color: textColor },
+              ]}
+              numberOfLines={1}
+            >
               {tab.label}
             </Text>
           </Pressable>
@@ -69,12 +81,12 @@ export function BookBottomNav({ activeTab, onTabChange }: BookBottomNavProps) {
 const styles = StyleSheet.create({
   nav: {
     width: '100%',
-    minHeight: 90,
+    minHeight: 70,
     backgroundColor: '#ffffff',
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingTop: 4,
+    paddingTop: 2,
     paddingHorizontal: 14,
     borderTopLeftRadius: 12,
     borderTopRightRadius: 12,
@@ -85,12 +97,19 @@ const styles = StyleSheet.create({
     elevation: 8,
   },
   tab: {
-    minWidth: 80,
+    flex: 1,
+    maxWidth: 150,
     paddingHorizontal: 16,
-    paddingVertical: 8,
+    paddingVertical: 6,
     borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  narrowTab: {
+    paddingHorizontal: 8,
+  },
+  tabletTab: {
+    maxWidth: 180,
   },
   activeTab: {
     backgroundColor: '#0038a8',
@@ -101,11 +120,15 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   label: {
-    marginTop: 2,
+    marginTop: 1,
     fontSize: 12,
     lineHeight: 16,
     fontWeight: '500',
     letterSpacing: 0.6,
+  },
+  narrowLabel: {
+    fontSize: 11,
+    letterSpacing: 0,
   },
   pressed: {
     opacity: 0.8,

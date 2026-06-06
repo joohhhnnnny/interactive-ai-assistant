@@ -1,6 +1,8 @@
+import { File } from 'expo-file-system';
 import { useEffect, useState } from 'react';
 import {
   Image,
+  Platform,
   Pressable,
   StyleSheet,
   Text,
@@ -8,14 +10,16 @@ import {
   View,
 } from 'react-native';
 import {
+  deleteArchivedBookPermanently,
   getStudentProfile,
   listArchivedBooks,
+  listSourcesByBook,
   restoreBook,
   saveStudentProfile,
 } from '../../data/database';
 import { Book } from '../../types/Book';
 import { StudentProfile } from '../../types/StudentProfile';
-import { IconArchive, IconSettings, IconUserProfile } from '../icons/icons';
+import { IconArchive, IconDots, IconSettings, IconUserProfile } from '../icons/icons';
 import { BottomSheet } from '../ui/BottomSheet';
 
 type AppHeaderProps = {
@@ -32,10 +36,13 @@ export function AppHeader({ onBooksChanged, onProfileUpdated }: AppHeaderProps) 
   const [editingName, setEditingName] = useState(false);
   const [profile, setProfile] = useState<StudentProfile | null>(null);
   const [archivedBooks, setArchivedBooks] = useState<Book[]>([]);
+  const [archiveMenuBookId, setArchiveMenuBookId] = useState<string | null>(null);
+  const [bookToDelete, setBookToDelete] = useState<Book | null>(null);
   const [firstName, setFirstName] = useState('');
   const [lastName, setLastName] = useState('');
   const [error, setError] = useState('');
   const [isSaving, setIsSaving] = useState(false);
+  const [isDeletingBook, setIsDeletingBook] = useState(false);
 
   useEffect(() => {
     if (!profileSheetOpen && !profileMenuOpen) return;
@@ -119,7 +126,41 @@ export function AppHeader({ onBooksChanged, onProfileUpdated }: AppHeaderProps) 
     setArchivedBooks((currentBooks) =>
       currentBooks.filter((book) => book.id !== bookId)
     );
+    setArchiveMenuBookId(null);
     onBooksChanged?.();
+  };
+
+  const handleDeleteArchivedBook = async () => {
+    if (!bookToDelete || isDeletingBook) {
+      return;
+    }
+
+    setIsDeletingBook(true);
+
+    try {
+      const sources = await listSourcesByBook(bookToDelete.id);
+      await deleteArchivedBookPermanently(bookToDelete.id);
+
+      if (Platform.OS !== 'web') {
+        for (const source of sources) {
+          try {
+            const file = new File(source.fileUri);
+            file.delete();
+          } catch {
+            // The database delete is the durable cleanup; file cleanup is best effort.
+          }
+        }
+      }
+
+      setArchivedBooks((currentBooks) =>
+        currentBooks.filter((book) => book.id !== bookToDelete.id)
+      );
+      setBookToDelete(null);
+      setArchiveMenuBookId(null);
+      onBooksChanged?.();
+    } finally {
+      setIsDeletingBook(false);
+    }
   };
 
   return (
@@ -304,7 +345,13 @@ export function AppHeader({ onBooksChanged, onProfileUpdated }: AppHeaderProps) 
           ) : (
             <View style={styles.archiveList}>
               {archivedBooks.map((book) => (
-                <View key={book.id} style={styles.archiveItem}>
+                <View
+                  key={book.id}
+                  style={[
+                    styles.archiveItem,
+                    archiveMenuBookId === book.id && styles.activeArchiveItem,
+                  ]}
+                >
                   <View style={styles.archiveTextBlock}>
                     <Text style={styles.archiveTitle} numberOfLines={1}>
                       {book.title}
@@ -315,18 +362,88 @@ export function AppHeader({ onBooksChanged, onProfileUpdated }: AppHeaderProps) 
                   </View>
 
                   <Pressable
-                    onPress={() => handleRestoreBook(book.id)}
+                    onPress={() =>
+                      setArchiveMenuBookId((currentId) =>
+                        currentId === book.id ? null : book.id
+                      )
+                    }
                     style={({ pressed }) => [
-                      styles.restoreButton,
+                      styles.archiveDotsButton,
                       pressed && styles.pressed,
                     ]}
+                    hitSlop={10}
                   >
-                    <Text style={styles.restoreButtonText}>Restore</Text>
+                    <IconDots color="#1A1C1C" />
                   </Pressable>
+
+                  {archiveMenuBookId === book.id ? (
+                    <View style={styles.archiveMenu}>
+                      <Pressable
+                        onPress={() => handleRestoreBook(book.id)}
+                        style={({ pressed }) => [
+                          styles.archiveMenuItem,
+                          pressed && styles.pressedMenuItem,
+                        ]}
+                      >
+                        <Text style={styles.archiveMenuText}>Restore</Text>
+                      </Pressable>
+
+                      <Pressable
+                        onPress={() => {
+                          setBookToDelete(book);
+                          setArchiveMenuBookId(null);
+                        }}
+                        style={({ pressed }) => [
+                          styles.archiveMenuItem,
+                          pressed && styles.pressedMenuItem,
+                        ]}
+                      >
+                        <Text style={styles.archiveMenuDangerText}>Delete</Text>
+                      </Pressable>
+                    </View>
+                  ) : null}
                 </View>
               ))}
             </View>
           )}
+        </View>
+      </BottomSheet>
+
+      <BottomSheet
+        visible={Boolean(bookToDelete)}
+        title="Are you sure about this?"
+        snapPoints={['36%', '54%']}
+        onClose={() => setBookToDelete(null)}
+      >
+        <View style={styles.settingsContent}>
+          <Text style={styles.confirmDeleteText}>
+            This permanently deletes the archived book, its sources, saved chat,
+            quizzes, and flashcards from this device.
+          </Text>
+
+          <Pressable
+            disabled={isDeletingBook}
+            onPress={handleDeleteArchivedBook}
+            style={({ pressed }) => [
+              styles.deleteForeverButton,
+              pressed && styles.pressed,
+              isDeletingBook && styles.disabledButton,
+            ]}
+          >
+            <Text style={styles.deleteForeverButtonText}>
+              {isDeletingBook ? 'Deleting...' : 'Delete forever'}
+            </Text>
+          </Pressable>
+
+          <Pressable
+            onPress={() => setBookToDelete(null)}
+            style={({ pressed }) => [
+              styles.keepArchiveButton,
+              pressed && styles.pressed,
+            ]}
+          >
+            <Text style={styles.keepArchiveButtonText}>Keep book</Text>
+          </Pressable>
         </View>
       </BottomSheet>
     </>
@@ -344,7 +461,6 @@ const styles = StyleSheet.create({
   },
   inner: {
     width: '100%',
-    maxWidth: 980,
     height: '100%',
     alignSelf: 'center',
     paddingHorizontal: 20,
@@ -358,7 +474,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   logoBox: {
-    width: 56,
+    width: 60,
     height: 48,
     overflow: 'visible',
   },
@@ -557,6 +673,7 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   archiveItem: {
+    position: 'relative',
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
@@ -565,6 +682,11 @@ const styles = StyleSheet.create({
     borderColor: '#e0e1e6',
     backgroundColor: '#ffffff',
     padding: 12,
+    zIndex: 1,
+  },
+  activeArchiveItem: {
+    zIndex: 20,
+    elevation: 20,
   },
   archiveTextBlock: {
     flex: 1,
@@ -580,6 +702,84 @@ const styles = StyleSheet.create({
     fontSize: 12,
     lineHeight: 16,
     fontWeight: '400',
+  },
+  archiveDotsButton: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#f8f8f8',
+  },
+  archiveMenu: {
+    position: 'absolute',
+    top: 48,
+    right: 12,
+    width: 138,
+    padding: 8,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#e0e1e6',
+    backgroundColor: '#ffffff',
+    zIndex: 30,
+    elevation: 30,
+    shadowColor: '#000',
+    shadowOpacity: 0.12,
+    shadowRadius: 16,
+    shadowOffset: { width: 0, height: 8 },
+  },
+  archiveMenuItem: {
+    minHeight: 40,
+    justifyContent: 'center',
+    borderRadius: 8,
+    paddingHorizontal: 10,
+  },
+  pressedMenuItem: {
+    backgroundColor: '#f4f5f7',
+  },
+  archiveMenuText: {
+    color: '#1a1c1c',
+    fontSize: 14,
+    lineHeight: 20,
+    fontWeight: '700',
+  },
+  archiveMenuDangerText: {
+    color: '#93000A',
+    fontSize: 14,
+    lineHeight: 20,
+    fontWeight: '700',
+  },
+  confirmDeleteText: {
+    color: '#444653',
+    fontSize: 15,
+    lineHeight: 22,
+    fontWeight: '400',
+  },
+  deleteForeverButton: {
+    minHeight: 50,
+    borderRadius: 12,
+    backgroundColor: '#E12531',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  deleteForeverButtonText: {
+    color: '#ffffff',
+    fontSize: 16,
+    lineHeight: 22,
+    fontWeight: '700',
+  },
+  keepArchiveButton: {
+    minHeight: 46,
+    borderRadius: 12,
+    backgroundColor: '#eeeeee',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  keepArchiveButtonText: {
+    color: '#1a1c1c',
+    fontSize: 15,
+    lineHeight: 20,
+    fontWeight: '700',
   },
   restoreButton: {
     minHeight: 36,
