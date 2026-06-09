@@ -19,6 +19,7 @@ import {
 import { AppHeader } from '../../components/layout/AppHeader';
 import { Screen } from '../../components/layout/Screen';
 import { BottomSheet } from '../../components/ui/BottomSheet';
+import { SheetTextInput } from '../../components/ui/SheetTextInput';
 import { OfflineModelDownloadCard } from '../../ai/OfflineModelDownloadCard';
 import { useOfflineStudyHelperStatus } from '../../ai/useOfflineStudyHelperStatus';
 import { Book } from '../../types/Book';
@@ -310,7 +311,7 @@ export function BookshelfScreen({
         <View style={styles.sheetForm}>
           <View style={styles.fieldGroup}>
             <Text style={styles.label}>LESSON NAME</Text>
-            <TextInput
+            <SheetTextInput
               value={bookTitle}
               onChangeText={(text) => {
                 setBookTitle(text);
@@ -325,7 +326,7 @@ export function BookshelfScreen({
 
           <View style={styles.fieldGroup}>
             <Text style={styles.label}>DESCRIPTION</Text>
-            <TextInput
+            <SheetTextInput
               value={bookDescription}
               onChangeText={setBookDescription}
               placeholder="Optional short note"
@@ -366,7 +367,7 @@ export function BookshelfScreen({
         <View style={styles.sheetForm}>
           <View style={styles.fieldGroup}>
             <Text style={styles.label}>LESSON NAME</Text>
-            <TextInput
+            <SheetTextInput
               value={editBookTitle}
               onChangeText={(text) => {
                 setEditBookTitle(text);
@@ -381,7 +382,7 @@ export function BookshelfScreen({
 
           <View style={styles.fieldGroup}>
             <Text style={styles.label}>DESCRIPTION</Text>
-            <TextInput
+            <SheetTextInput
               value={editBookDescription}
               onChangeText={setEditBookDescription}
               placeholder="Optional short note"

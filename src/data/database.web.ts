@@ -792,6 +792,27 @@ export async function hasReadySources(bookId: string): Promise<boolean> {
   });
 }
 
+export async function hasReadyStudyChunks(bookId: string): Promise<boolean> {
+  await initializeDatabase();
+
+  const numericId = Number(bookId);
+
+  if (!Number.isFinite(numericId)) {
+    return false;
+  }
+
+  const state = readState();
+  const readySourceIds = new Set(
+    state.processingJobs
+      .filter((job) => job.status === 'ready')
+      .map((job) => job.sourceId)
+  );
+
+  return state.chunks.some(
+    (chunk) => chunk.bookId === numericId && readySourceIds.has(chunk.sourceId)
+  );
+}
+
 export async function hasProcessingSources(bookId: string): Promise<boolean> {
   await initializeDatabase();
 
@@ -816,6 +837,56 @@ export async function hasProcessingSources(bookId: string): Promise<boolean> {
       Boolean(job && processingStatuses.includes(job.status))
     );
   });
+}
+
+export async function saveGeneratedQuiz(
+  bookId: string,
+  sourceChunkIds: string[],
+  quizText: string
+) {
+  await initializeDatabase();
+
+  const numericId = Number(bookId);
+
+  if (!Number.isFinite(numericId)) {
+    return;
+  }
+
+  const state = readState();
+  state.generatedQuizzes.push({
+    id: state.nextGeneratedQuizId,
+    bookId: numericId,
+    sourceChunkIds: JSON.stringify(sourceChunkIds),
+    payloadJson: JSON.stringify({ text: quizText }),
+    createdAt: new Date().toISOString(),
+  });
+  state.nextGeneratedQuizId += 1;
+  writeState(state);
+}
+
+export async function saveGeneratedFlashcards(
+  bookId: string,
+  sourceChunkIds: string[],
+  flashcardsText: string
+) {
+  await initializeDatabase();
+
+  const numericId = Number(bookId);
+
+  if (!Number.isFinite(numericId)) {
+    return;
+  }
+
+  const state = readState();
+  state.generatedFlashcards.push({
+    id: state.nextGeneratedFlashcardId,
+    bookId: numericId,
+    sourceChunkIds: JSON.stringify(sourceChunkIds),
+    payloadJson: JSON.stringify({ text: flashcardsText }),
+    createdAt: new Date().toISOString(),
+  });
+  state.nextGeneratedFlashcardId += 1;
+  writeState(state);
 }
 
 export async function listRecentChatMessagesByBook(
@@ -1069,6 +1140,27 @@ export async function listEmbeddedChunksByBook(
         embedding: storedEmbedding?.embedding ?? null,
       };
     });
+}
+
+export async function listSourceChunksByBook(
+  bookId: string,
+  limit = 8
+): Promise<SourceChunk[]> {
+  await initializeDatabase();
+
+  const numericId = Number(bookId);
+
+  if (!Number.isFinite(numericId)) {
+    return [];
+  }
+
+  const state = readState();
+
+  return state.chunks
+    .filter((chunk) => chunk.bookId === numericId)
+    .sort((a, b) => a.sourceId - b.sourceId || a.chunkIndex - b.chunkIndex)
+    .slice(0, limit)
+    .map((chunk) => mapChunk(state, chunk));
 }
 
 export async function searchChunksByText(

@@ -6,7 +6,6 @@ import {
   Pressable,
   StyleSheet,
   Text,
-  TextInput,
   View,
 } from 'react-native';
 import {
@@ -21,6 +20,7 @@ import { Book } from '../../types/Book';
 import { StudentProfile } from '../../types/StudentProfile';
 import { IconArchive, IconDots, IconSettings, IconUserProfile } from '../icons/icons';
 import { BottomSheet } from '../ui/BottomSheet';
+import { SheetTextInput } from '../ui/SheetTextInput';
 
 type AppHeaderProps = {
   onBooksChanged?: () => void;
@@ -268,7 +268,7 @@ export function AppHeader({ onBooksChanged, onProfileUpdated }: AppHeaderProps) 
           <View style={styles.form}>
             <View style={styles.fieldGroup}>
               <Text style={styles.inputLabel}>FIRST NAME</Text>
-              <TextInput
+              <SheetTextInput
                 value={firstName}
                 onChangeText={(text) => {
                   setFirstName(text);
@@ -283,7 +283,7 @@ export function AppHeader({ onBooksChanged, onProfileUpdated }: AppHeaderProps) 
 
             <View style={styles.fieldGroup}>
               <Text style={styles.inputLabel}>LAST NAME</Text>
-              <TextInput
+              <SheetTextInput
                 value={lastName}
                 onChangeText={(text) => {
                   setLastName(text);

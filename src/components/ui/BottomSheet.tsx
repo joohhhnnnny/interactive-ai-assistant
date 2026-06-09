@@ -41,6 +41,7 @@ export function BottomSheet({
         enablePanDownToClose
         keyboardBehavior="interactive"
         keyboardBlurBehavior="restore"
+        android_keyboardInputMode="adjustPan"
         backdropComponent={(props: ComponentProps<typeof BottomSheetBackdrop>) => (
           <BottomSheetBackdrop
             {...props}
@@ -58,7 +59,7 @@ export function BottomSheet({
           keyboardShouldPersistTaps="handled"
           contentContainerStyle={[
             styles.content,
-            { paddingBottom: Math.max(insets.bottom, 18) + 10 },
+            { paddingBottom: Math.max(insets.bottom, 18) + 96 },
           ]}
         >
           <View style={styles.header}>

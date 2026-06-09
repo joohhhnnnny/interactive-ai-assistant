@@ -24,7 +24,7 @@ export default function RootLayout() {
 
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
-      <KeyboardProvider>
+      <KeyboardProvider navigationBarTranslucent={false}>
         <SafeAreaProvider>
           <BottomSheetModalProvider>
             <StatusBar style="dark" />

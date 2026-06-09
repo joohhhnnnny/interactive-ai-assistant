@@ -1,6 +1,7 @@
 import {
   EmbeddedSourceChunk,
   listEmbeddedChunksByBook,
+  listSourceChunksByBook,
   searchChunksByText,
   SourceChunk,
 } from '../data/database';
@@ -9,7 +10,43 @@ export type RetrievedChunk = SourceChunk & {
   score: number;
 };
 
-const minimumSimilarity = 0.16;
+const minimumSimilarity = 0.24;
+const minimumFallbackScore = 0.35;
+const searchStopWords = new Set([
+  'about',
+  'after',
+  'again',
+  'also',
+  'answer',
+  'because',
+  'before',
+  'book',
+  'could',
+  'does',
+  'explain',
+  'from',
+  'have',
+  'lesson',
+  'like',
+  'make',
+  'mean',
+  'please',
+  'question',
+  'should',
+  'source',
+  'that',
+  'their',
+  'there',
+  'these',
+  'this',
+  'what',
+  'when',
+  'where',
+  'which',
+  'with',
+  'would',
+  'your',
+]);
 
 function dotProduct(left: ArrayLike<number>, right: ArrayLike<number>) {
   const length = Math.min(left.length, right.length);
@@ -58,6 +95,30 @@ function rankEmbeddedChunks(
     .slice(0, topK);
 }
 
+function getSearchTerms(query: string) {
+  return Array.from(
+    new Set(
+      query
+        .toLowerCase()
+        .replace(/[^a-z0-9\s]/g, ' ')
+        .split(/\s+/)
+        .map((term) => term.trim())
+        .filter((term) => term.length > 2 && !searchStopWords.has(term))
+    )
+  ).slice(0, 8);
+}
+
+function scoreTextByTerms(text: string, terms: string[]) {
+  if (terms.length === 0) {
+    return 0;
+  }
+
+  const normalizedText = text.toLowerCase();
+  const matchedTerms = terms.filter((term) => normalizedText.includes(term));
+
+  return matchedTerms.length / terms.length;
+}
+
 export async function retrieveRelevantChunks(
   bookId: string,
   query: string,
@@ -73,11 +134,55 @@ export async function retrieveRelevantChunks(
     }
   }
 
-  const fallbackChunks = await searchChunksByText(bookId, query, topK);
+  const terms = getSearchTerms(query);
 
-  return fallbackChunks.map((chunk, index) => ({
+  if (terms.length === 0) {
+    return [];
+  }
+
+  const fallbackChunks = await searchChunksByText(bookId, terms.join(' '), topK * 2);
+
+  return fallbackChunks
+    .map((chunk) => ({
+      ...chunk,
+      score: scoreTextByTerms(chunk.text, terms),
+    }))
+    .filter((chunk) => chunk.score >= minimumFallbackScore)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, topK);
+}
+
+export async function retrieveStudyToolChunks(
+  bookId: string,
+  queryEmbedding?: ArrayLike<number> | null,
+  topK = 20
+): Promise<RetrievedChunk[]> {
+  if (queryEmbedding) {
+    const chunks = await listEmbeddedChunksByBook(bookId);
+    const rankedChunks = rankEmbeddedChunks(chunks, queryEmbedding, topK);
+
+    if (rankedChunks.length > 0) {
+      return rankedChunks;
+    }
+  }
+
+  const chunks = await listSourceChunksByBook(bookId, topK);
+
+  return chunks.map((chunk, index) => ({
     ...chunk,
-    score: 1 - index * 0.05,
+    score: 1 - index * 0.03,
+  }));
+}
+
+export async function retrieveBookOverviewChunks(
+  bookId: string,
+  topK = 12
+): Promise<RetrievedChunk[]> {
+  const chunks = await listSourceChunksByBook(bookId, topK);
+
+  return chunks.map((chunk, index) => ({
+    ...chunk,
+    score: 1 - index * 0.02,
   }));
 }
 
@@ -103,7 +208,7 @@ export function buildGroundedMessages(question: string, chunks: RetrievedChunk[]
     {
       role: 'system' as const,
       content:
-        'You are ALAB, an offline study assistant for students. Answer using the provided lesson context first. If the context is not enough, say the lesson does not have enough information yet, then give one brief study hint only if it helps. Keep wording simple, kind, and easy for students to follow. Do not mention technical model or retrieval details.',
+        'You are ALAB, an offline study assistant for students. If the student asks simple general knowledge or arithmetic that does not need the lesson, answer directly and briefly without claiming to use sources. If the student asks about the lesson, answer using the provided lesson context first. If the lesson context is not enough for a lesson question, say the lesson does not have enough information yet, then give one brief study hint only if it helps. Keep wording simple, kind, and easy for students to follow. Do not mention technical model or retrieval details.',
     },
     {
       role: 'user' as const,
@@ -119,8 +224,8 @@ export function buildStudyToolMessages(
 ) {
   const request =
     tool === 'quiz'
-      ? 'Create a short 3-question quiz from only this lesson context. Prefer multiple choice. Use this exact clear format for each item: Question: ... then A. ... B. ... C. ... D. ... Correct answer: ... Explanation: ...'
-      : 'Create 6 concise flashcards from only this lesson context. Use this exact clear format for each card: Front: ... on one line, then Back: ... on the next line. Keep each back easy to review.';
+      ? 'Create exactly 10 quiz questions from only this lesson context. Ask about concrete facts, definitions, and ideas from the PDF. Do not ask vague questions like "what is this review about". Use this plain format with each field on its own line and no markdown:\nQuestion: ...\nA. ...\nB. ...\nC. ...\nD. ...\nCorrect answer: A. ...\nExplanation: ...'
+      : 'Create exactly 20 concise flashcards from only this lesson context. Each front must ask for a real term, fact, or idea from the PDF. Use this plain format with each field on its own line and no markdown:\nFront: ...\nBack: ...';
 
   return buildGroundedMessages(
     `${request}\nBook title: ${bookTitle}`,

@@ -1,5 +1,4 @@
 import { Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { IconChat, IconSources, IconTools } from '../icons/icons';
 
 export type BookTab = 'sources' | 'chat' | 'tools';
@@ -10,7 +9,6 @@ type BookBottomNavProps = {
 };
 
 export function BookBottomNav({ activeTab, onTabChange }: BookBottomNavProps) {
-  const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
   const isNarrow = width < 360;
   const isTablet = width >= 700;
@@ -22,74 +20,74 @@ export function BookBottomNav({ activeTab, onTabChange }: BookBottomNavProps) {
   ];
 
   return (
-    <View
-      style={[
-        styles.nav,
-        {
-          paddingBottom: Math.max(insets.bottom, 4),
-        },
-      ]}
-    >
-      {tabs.map((tab) => {
-        const isActive = activeTab === tab.id;
-        const iconColor = isActive ? '#ffffff' : '#444653';
-        const textColor = isActive ? '#ffffff' : '#444653';
+    <View style={styles.wrapper}>
+      <View style={styles.nav}>
+        {tabs.map((tab) => {
+          const isActive = activeTab === tab.id;
 
-        return (
-          <Pressable
-            key={tab.id}
-            onPress={() => onTabChange(tab.id)}
-            style={({ pressed }) => [
-              styles.tab,
-              isNarrow && styles.narrowTab,
-              isTablet && styles.tabletTab,
-              isActive && styles.activeTab,
-              pressed && styles.pressed,
-            ]}
-          >
-            <View style={styles.iconBox}>
-              {tab.id === 'sources' ? (
-                <IconSources color={iconColor} size={22} />
-              ) : null}
+          const iconColor = isActive ? '#ffffff' : '#444653';
+          const textColor = isActive ? '#ffffff' : '#444653';
 
-              {tab.id === 'chat' ? (
-                <IconChat color={iconColor} size={22} />
-              ) : null}
-
-              {tab.id === 'tools' ? (
-                <IconTools color={iconColor} size={19.5} />
-              ) : null}
-            </View>
-
-            <Text
-              style={[
-                styles.label,
-                isNarrow && styles.narrowLabel,
-                { color: textColor },
+          return (
+            <Pressable
+              key={tab.id}
+              onPress={() => onTabChange(tab.id)}
+              style={({ pressed }) => [
+                styles.tab,
+                isNarrow && styles.narrowTab,
+                isTablet && styles.tabletTab,
+                isActive && styles.activeTab,
+                pressed && styles.pressed,
               ]}
-              numberOfLines={1}
             >
-              {tab.label}
-            </Text>
-          </Pressable>
-        );
-      })}
+              <View style={styles.iconBox}>
+                {tab.id === 'sources' ? (
+                  <IconSources color={iconColor} size={22} />
+                ) : null}
+
+                {tab.id === 'chat' ? (
+                  <IconChat color={iconColor} size={22} />
+                ) : null}
+
+                {tab.id === 'tools' ? (
+                  <IconTools color={iconColor} size={19.5} />
+                ) : null}
+              </View>
+
+              <Text
+                style={[
+                  styles.label,
+                  isNarrow && styles.narrowLabel,
+                  { color: textColor },
+                ]}
+                numberOfLines={1}
+              >
+                {tab.label}
+              </Text>
+            </Pressable>
+          );
+        })}
+      </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
+  wrapper: {
+    backgroundColor: '#ffffff',
+  },
   nav: {
     width: '100%',
-    minHeight: 70,
+    height: 62,
     backgroundColor: '#ffffff',
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingTop: 2,
-    paddingHorizontal: 14,
+    paddingHorizontal: 12,
+
     borderTopLeftRadius: 12,
     borderTopRightRadius: 12,
+
     shadowColor: '#000',
     shadowOpacity: 0.04,
     shadowRadius: 6,
@@ -99,8 +97,8 @@ const styles = StyleSheet.create({
   tab: {
     flex: 1,
     maxWidth: 150,
-    paddingHorizontal: 16,
-    paddingVertical: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 4,
     borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',

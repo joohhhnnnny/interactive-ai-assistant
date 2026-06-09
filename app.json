@@ -13,6 +13,7 @@
     },
     "android": {
       "userInterfaceStyle": "light",
+      "softwareKeyboardLayoutMode": "resize",
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/images/logo/alab-logo.png",

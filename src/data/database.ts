@@ -863,6 +863,28 @@ export async function hasReadySources(bookId: string): Promise<boolean> {
   return (row?.count ?? 0) > 0;
 }
 
+export async function hasReadyStudyChunks(bookId: string): Promise<boolean> {
+  await initializeDatabase();
+
+  const numericId = Number(bookId);
+
+  if (!Number.isFinite(numericId)) {
+    return false;
+  }
+
+  const database = await getDatabase();
+  const row = await database.getFirstAsync<{ count: number }>(
+    `SELECT COUNT(*) AS count
+     FROM source_chunks
+     INNER JOIN source_processing_jobs
+       ON source_processing_jobs.source_id = source_chunks.source_id
+     WHERE source_chunks.book_id = ? AND source_processing_jobs.status = 'ready'`,
+    numericId
+  );
+
+  return (row?.count ?? 0) > 0;
+}
+
 export async function hasProcessingSources(bookId: string): Promise<boolean> {
   await initializeDatabase();
 
@@ -884,6 +906,56 @@ export async function hasProcessingSources(bookId: string): Promise<boolean> {
   );
 
   return (row?.count ?? 0) > 0;
+}
+
+export async function saveGeneratedQuiz(
+  bookId: string,
+  sourceChunkIds: string[],
+  quizText: string
+) {
+  await initializeDatabase();
+
+  const numericId = Number(bookId);
+
+  if (!Number.isFinite(numericId)) {
+    return;
+  }
+
+  const database = await getDatabase();
+  await database.runAsync(
+    `INSERT INTO generated_quizzes (book_id, source_chunk_ids, quiz_json, created_at)
+     VALUES (?, ?, ?, ?)`,
+    numericId,
+    JSON.stringify(sourceChunkIds),
+    JSON.stringify({ text: quizText }),
+    new Date().toISOString()
+  );
+}
+
+export async function saveGeneratedFlashcards(
+  bookId: string,
+  sourceChunkIds: string[],
+  flashcardsText: string
+) {
+  await initializeDatabase();
+
+  const numericId = Number(bookId);
+
+  if (!Number.isFinite(numericId)) {
+    return;
+  }
+
+  const database = await getDatabase();
+  await database.runAsync(
+    `INSERT INTO generated_flashcards (
+       book_id, source_chunk_ids, flashcards_json, created_at
+     )
+     VALUES (?, ?, ?, ?)`,
+    numericId,
+    JSON.stringify(sourceChunkIds),
+    JSON.stringify({ text: flashcardsText }),
+    new Date().toISOString()
+  );
 }
 
 export async function listRecentChatMessagesByBook(
@@ -1181,6 +1253,41 @@ export async function listEmbeddedChunksByBook(
     ...mapChunkRow(row),
     embedding: row.embedding_json ? JSON.parse(row.embedding_json) : null,
   }));
+}
+
+export async function listSourceChunksByBook(
+  bookId: string,
+  limit = 8
+): Promise<SourceChunk[]> {
+  await initializeDatabase();
+
+  const numericId = Number(bookId);
+
+  if (!Number.isFinite(numericId)) {
+    return [];
+  }
+
+  const database = await getDatabase();
+  const rows = await database.getAllAsync<ChunkRow>(
+    `SELECT source_chunks.id,
+            source_chunks.source_id,
+            source_chunks.book_id,
+            source_chunks.chunk_index,
+            source_chunks.page_number,
+            source_chunks.text,
+            source_chunks.token_estimate,
+            source_chunks.created_at,
+            sources.filename AS source_name
+     FROM source_chunks
+     INNER JOIN sources ON sources.id = source_chunks.source_id
+     WHERE source_chunks.book_id = ?
+     ORDER BY source_chunks.source_id ASC, source_chunks.chunk_index ASC
+     LIMIT ?`,
+    numericId,
+    limit
+  );
+
+  return rows.map(mapChunkRow);
 }
 
 export async function searchChunksByText(

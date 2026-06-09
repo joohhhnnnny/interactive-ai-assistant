@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { getBookById } from '../../../data/database';
 import { LoadingScreen } from '../../../features/loading/LoadingScreen';
-import { BookPage } from '../../../features/book/BookPage';
+import { BookPage } from '../../../features/book/book-page/BookPage';
 import { Book } from '../../../types/Book';
 
 export default function BookRoute() {

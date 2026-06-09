@@ -2,15 +2,13 @@ import { useEffect, useRef, useState } from 'react';
 import {
     Animated,
     Easing,
-    KeyboardAvoidingView,
-    Platform,
     Pressable,
-    ScrollView,
     StyleSheet,
     Text,
     TextInput,
     View,
 } from 'react-native';
+import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 import { IconArrow } from '../../components/icons/icons';
 import { Screen } from '../../components/layout/Screen';
 
@@ -77,92 +75,90 @@ export function RegistrationScreen({ onComplete }: RegistrationScreenProps) {
 
   return (
     <Screen style={styles.screen}>
-      <KeyboardAvoidingView
+      <KeyboardAwareScrollView
         style={styles.keyboardView}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        contentContainerStyle={styles.scrollContent}
+        bottomOffset={120}
+        extraKeyboardSpace={24}
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
       >
-        <ScrollView
-          contentContainerStyle={styles.scrollContent}
-          keyboardShouldPersistTaps="handled"
-          showsVerticalScrollIndicator={false}
+        <Animated.View
+          style={[
+            styles.container,
+            {
+              opacity,
+              transform: [{ translateY }],
+            },
+          ]}
         >
-          <Animated.View
-            style={[
-              styles.container,
-              {
-                opacity,
-                transform: [{ translateY }],
-              },
-            ]}
-          >
-            <View style={styles.heading}>
-              <Text style={styles.title}>{"Let's get to know you."}</Text>
-              <Text style={styles.subtitle}>
-                Tell us what to call you as we set up your personalized study
-                space.
-              </Text>
+          <View style={styles.heading}>
+            <Text style={styles.title}>{"Let's get to know you."}</Text>
+            <Text style={styles.subtitle}>
+              Tell us what to call you as we set up your personalized study
+              space.
+            </Text>
+          </View>
+
+          <View style={styles.card}>
+            <View style={styles.fieldGroup}>
+              <Text style={styles.label}>FIRST NAME</Text>
+              <TextInput
+                value={firstName}
+                placeholder="e.g. Maria"
+                placeholderTextColor="#747685"
+                onChangeText={(text) => {
+                  setFirstName(text);
+                  setErrors((prev) => ({ ...prev, first: undefined }));
+                }}
+                onFocus={() => setFocused('first')}
+                onBlur={() => setFocused(null)}
+                style={getInputStyle('first')}
+                autoCapitalize="words"
+                returnKeyType="next"
+              />
+              {errors.first ? (
+                <Text style={styles.errorText}>{errors.first}</Text>
+              ) : null}
             </View>
 
-            <View style={styles.card}>
-              <View style={styles.fieldGroup}>
-                <Text style={styles.label}>FIRST NAME</Text>
-                <TextInput
-                  value={firstName}
-                  placeholder="e.g. Maria"
-                  placeholderTextColor="#747685"
-                  onChangeText={(text) => {
-                    setFirstName(text);
-                    setErrors((prev) => ({ ...prev, first: undefined }));
-                  }}
-                  onFocus={() => setFocused('first')}
-                  onBlur={() => setFocused(null)}
-                  style={getInputStyle('first')}
-                  autoCapitalize="words"
-                  returnKeyType="next"
-                />
-                {errors.first ? (
-                  <Text style={styles.errorText}>{errors.first}</Text>
-                ) : null}
-              </View>
-
-              <View style={styles.fieldGroupLast}>
-                <Text style={styles.label}>LAST NAME</Text>
-                <TextInput
-                  value={lastName}
-                  placeholder="e.g. Santos"
-                  placeholderTextColor="#747685"
-                  onChangeText={(text) => {
-                    setLastName(text);
-                    setErrors((prev) => ({ ...prev, last: undefined }));
-                  }}
-                  onFocus={() => setFocused('last')}
-                  onBlur={() => setFocused(null)}
-                  style={getInputStyle('last')}
-                  autoCapitalize="words"
-                  returnKeyType="done"
-                  onSubmitEditing={handleSubmit}
-                />
-                {errors.last ? (
-                  <Text style={styles.errorText}>{errors.last}</Text>
-                ) : null}
-              </View>
-
-              <View style={styles.submitWrapper}>
-                <Pressable
-                  onPress={handleSubmit}
-                  style={({ pressed }) => [
-                    styles.button,
-                    pressed && styles.buttonPressed,
-                  ]}
-                >
-                  <Text style={styles.buttonText}>Enter Bookshelf</Text>
-                  <IconArrow color="#ffffff" size={16} />
-                </Pressable>
-              </View>
+            <View style={styles.fieldGroupLast}>
+              <Text style={styles.label}>LAST NAME</Text>
+              <TextInput
+                value={lastName}
+                placeholder="e.g. Santos"
+                placeholderTextColor="#747685"
+                onChangeText={(text) => {
+                  setLastName(text);
+                  setErrors((prev) => ({ ...prev, last: undefined }));
+                }}
+                onFocus={() => setFocused('last')}
+                onBlur={() => setFocused(null)}
+                style={getInputStyle('last')}
+                autoCapitalize="words"
+                returnKeyType="done"
+                onSubmitEditing={handleSubmit}
+              />
+              {errors.last ? (
+                <Text style={styles.errorText}>{errors.last}</Text>
+              ) : null}
             </View>
-          </Animated.View>
-        </ScrollView>
-      </KeyboardAvoidingView>
+
+            <View style={styles.submitWrapper}>
+              <Pressable
+                onPress={handleSubmit}
+                style={({ pressed }) => [
+                  styles.button,
+                  pressed && styles.buttonPressed,
+                ]}
+              >
+                <Text style={styles.buttonText}>Enter Bookshelf</Text>
+                <IconArrow color="#ffffff" size={16} />
+              </Pressable>
+            </View>
+          </View>
+        </Animated.View>
+      </KeyboardAwareScrollView>
     </Screen>
   );
 }
@@ -177,9 +173,10 @@ const styles = StyleSheet.create({
   scrollContent: {
     flexGrow: 1,
     alignItems: 'center',
-    justifyContent: 'center',
+    justifyContent: 'flex-start',
     paddingHorizontal: 20,
-    paddingVertical: 80,
+    paddingTop: 72,
+    paddingBottom: 160,
   },
   container: {
     width: '100%',

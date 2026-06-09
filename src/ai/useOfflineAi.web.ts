@@ -22,6 +22,8 @@ export function useOfflineAi() {
     embedLessonText,
     embeddingModelName: 'multi-qa-minilm-l6-cos-v1',
     isAvailable: false,
+    hasCheckedDownload: true,
+    shouldLoadModel: false,
     isModelReady: false,
     isEmbeddingReady: false,
     isGenerating: false,
