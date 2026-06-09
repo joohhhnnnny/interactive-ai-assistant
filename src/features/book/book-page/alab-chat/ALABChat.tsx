@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Animated, Keyboard, Platform, Pressable, Text, TextInput, useWindowDimensions, View } from 'react-native';
 import { KeyboardAwareScrollView, KeyboardAwareScrollViewRef, KeyboardStickyView } from 'react-native-keyboard-controller';
+import { useOfflineSpeech } from '../../../../ai/useOfflineSpeech';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { IconSend } from '../../../../components/icons/icons';
+import { IconMic, IconSend } from '../../../../components/icons/icons';
 import { appendChatMessage, hasProcessingSources, listRecentChatMessagesByBook, StoredChatMessage } from '../../../../data/database';
 import { Book } from '../../../../types/Book';
 import { ChatMessage, OfflineAi, PendingChatPrompt } from '../types';
@@ -13,6 +14,11 @@ type QuizQuestion = {
   options: string[];
   answer: string;
   explanation?: string;
+};
+
+type StudyToolIntent = {
+  tool: 'quiz' | 'flashcards';
+  mode?: 'mcq' | 'fill_blank' | 'essay';
 };
 
 type MarkdownSegment = {
@@ -43,6 +49,7 @@ export function ALABChat({
   const [activeStudyMessage, setActiveStudyMessage] = useState<ChatMessage | null>(
     null
   );
+  const offlineSpeech = useOfflineSpeech();
 
   const scrollRef = useRef<KeyboardAwareScrollViewRef>(null);
   const isMountedRef = useRef(true);
@@ -147,7 +154,7 @@ export function ALABChat({
       const intent = getStudyToolIntent(question);
       const waitingMessageId = `waiting-${Date.now()}`;
       const waitingMessage = intent
-        ? intent === 'quiz'
+        ? intent.tool === 'quiz'
           ? 'ALAB is preparing this quiz from your lesson. Please wait...'
           : 'ALAB is preparing these flashcards from your lesson. Please wait...'
         : null;
@@ -165,7 +172,7 @@ export function ALABChat({
       }
 
       const answer = intent
-        ? await offlineAi.generateStudyTool(intent)
+        ? await offlineAi.generateStudyTool(intent.tool, intent.mode)
         : await offlineAi.answerQuestion(question);
 
       if (!isMountedRef.current || activeRequestIdRef.current !== requestId) {
@@ -174,7 +181,7 @@ export function ALABChat({
 
       const aiKind: ChatMessage['kind'] = intent
         ? answer.sources.length > 0
-          ? intent
+          ? intent.tool
           : 'status'
         : 'answer';
       const aiMessage: ChatMessage = {
@@ -224,6 +231,86 @@ export function ALABChat({
       }
     }
   }, [book.id, input, isTyping, offlineAi]);
+
+  const addLocalStatusMessage = useCallback((text: string) => {
+    const statusMessage: ChatMessage = {
+      id: `voice-status-${Date.now()}`,
+      role: 'ai',
+      text,
+      kind: 'status',
+    };
+
+    setMessages((previous) => [...previous, statusMessage]);
+  }, []);
+
+  const handleVoicePress = useCallback(async () => {
+    if (isTyping || offlineSpeech.isTranscribing) {
+      return;
+    }
+
+    if (offlineSpeech.isListening) {
+      try {
+        const transcript = await offlineSpeech.stopAndTranscribe();
+
+        if (!transcript) {
+          addLocalStatusMessage('I did not hear a question. Please try again.');
+          return;
+        }
+
+        setInput(transcript);
+        await handleSend(transcript);
+      } catch {
+        addLocalStatusMessage('Voice input could not prepare your question. Please try again.');
+      }
+
+      return;
+    }
+
+    if (!offlineSpeech.isVoiceAvailable) {
+      addLocalStatusMessage('Voice input needs the Android app build.');
+      return;
+    }
+
+    const hasMicPermission = await offlineSpeech.requestPermission();
+
+    if (!hasMicPermission) {
+      addLocalStatusMessage('Please allow microphone access so ALAB can listen to your question.');
+      return;
+    }
+
+    if (!offlineSpeech.hasCheckedDownload) {
+      addLocalStatusMessage('Checking your saved study helper...');
+      return;
+    }
+
+    if (!offlineSpeech.shouldLoadModel) {
+      addLocalStatusMessage('Please prepare the study helper from My Books first.');
+      return;
+    }
+
+    if (!offlineSpeech.isReady) {
+      const progress = Math.round(offlineSpeech.downloadProgress * 100);
+      addLocalStatusMessage(
+        `Voice input is getting ready${progress > 0 ? ` (${progress}%)` : ''}.`
+      );
+      return;
+    }
+
+    try {
+      const didStart = await offlineSpeech.startListening();
+
+      if (!didStart) {
+        addLocalStatusMessage('Please allow microphone access so ALAB can listen to your question.');
+      }
+    } catch {
+      addLocalStatusMessage('Please allow microphone access so ALAB can listen to your question.');
+    }
+  }, [
+    addLocalStatusMessage,
+    handleSend,
+    isTyping,
+    offlineSpeech,
+  ]);
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -369,9 +456,9 @@ export function ALABChat({
             <TextInput
               value={input}
               onChangeText={setInput}
-              placeholder="Ask a Question or Create Something..."
+              placeholder={getComposerPlaceholder(offlineSpeech)}
               placeholderTextColor="#747685"
-              editable={!isTyping}
+              editable={!isTyping && !offlineSpeech.isListening && !offlineSpeech.isTranscribing}
               style={[styles.chatInput, isTyping && styles.disabledChatInput]}
               returnKeyType="send"
               onSubmitEditing={() => handleSend()}
@@ -389,11 +476,27 @@ export function ALABChat({
             />
 
             <Pressable
-              disabled={isTyping}
+              disabled={isTyping || offlineSpeech.isTranscribing}
+              onPress={handleVoicePress}
+              style={[
+                styles.voiceButton,
+                offlineSpeech.isListening && styles.listeningVoiceButton,
+                (isTyping || offlineSpeech.isTranscribing) && styles.disabledVoiceButton,
+              ]}
+            >
+              <IconMic
+                color={offlineSpeech.isListening ? '#ffffff' : '#002576'}
+                size={17}
+              />
+            </Pressable>
+
+            <Pressable
+              disabled={isTyping || offlineSpeech.isListening || offlineSpeech.isTranscribing}
               onPress={() => handleSend()}
               style={[
                 styles.sendButton,
-                isTyping && styles.disabledSendButton,
+                (isTyping || offlineSpeech.isListening || offlineSpeech.isTranscribing) &&
+                  styles.disabledSendButton,
               ]}
             >
               <IconSend color="#ffffff" size={13.3} />
@@ -425,6 +528,18 @@ function formatAnalysisDuration(durationMs: number) {
   }
 
   return `${minutes}:${String(seconds).padStart(2, '0')}`;
+}
+
+function getComposerPlaceholder(offlineSpeech: ReturnType<typeof useOfflineSpeech>) {
+  if (offlineSpeech.isListening) {
+    return 'Listening...';
+  }
+
+  if (offlineSpeech.isTranscribing) {
+    return 'Preparing your question...';
+  }
+
+  return 'Ask a Question or Create Something...';
 }
 
 function getVisibleSources(message: ChatMessage) {
@@ -1062,11 +1177,28 @@ function FlashcardPanelContent({ text }: { text: string }) {
   );
 }
 
-function getStudyToolIntent(question: string): 'quiz' | 'flashcards' | null {
+function getStudyToolIntent(question: string): StudyToolIntent | null {
   const normalized = question.toLowerCase();
 
   if (normalized.includes('quiz')) {
-    return 'quiz';
+    if (
+      normalized.includes('fill in') ||
+      normalized.includes('fill-in') ||
+      normalized.includes('blank')
+    ) {
+      return { tool: 'quiz', mode: 'fill_blank' };
+    }
+
+    if (
+      normalized.includes('essay') ||
+      normalized.includes('explain') ||
+      normalized.includes('open ended') ||
+      normalized.includes('open-ended')
+    ) {
+      return { tool: 'quiz', mode: 'essay' };
+    }
+
+    return { tool: 'quiz', mode: 'mcq' };
   }
 
   if (
@@ -1074,7 +1206,7 @@ function getStudyToolIntent(question: string): 'quiz' | 'flashcards' | null {
     normalized.includes('flash card') ||
     normalized.includes('review card')
   ) {
-    return 'flashcards';
+    return { tool: 'flashcards' };
   }
 
   return null;

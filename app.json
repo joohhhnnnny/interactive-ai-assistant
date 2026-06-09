@@ -55,6 +55,15 @@
           "hidden": false,
           "style": "dark"
         }
+      ],
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "Allow Project Alab to listen to your study question.",
+          "recordAudioAndroid": true,
+          "enableBackgroundPlayback": false,
+          "enableBackgroundRecording": false
+        }
       ]
     ],
     "experiments": {

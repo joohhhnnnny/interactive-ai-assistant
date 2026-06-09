@@ -6,6 +6,8 @@ export function useOfflineStudyHelperStatus() {
     isLoading: false,
     progress: 0,
     error: null,
+    recoveryMessage: null,
+    deviceWarning: null,
     startDownload: () => {},
   };
 }

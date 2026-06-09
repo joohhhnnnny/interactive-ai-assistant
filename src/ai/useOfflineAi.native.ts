@@ -2,8 +2,6 @@ import { useCallback, useEffect, useState } from 'react';
 import {
   isAvailable,
   Message,
-  models,
-  MULTI_QA_MINILM_L6_COS_V1,
   useLLM,
   useTextEmbeddings,
 } from 'react-native-executorch';
@@ -21,41 +19,64 @@ import {
   retrieveRelevantChunks,
   retrieveStudyToolChunks,
 } from './retrieval';
+import {
+  embeddingModelName,
+  modelDownloadedKey,
+  modelProfileKey,
+  offlineEmbeddingModel,
+  offlineLlmModel,
+  offlineModelProfile,
+} from './offlineModelResources.native';
 
 type OfflineAiResponse = {
   text: string;
   sources: string[];
 };
 
-const modelDownloadedKey = 'offline_ai_model_downloaded';
-const embeddingModelName = 'multi-qa-minilm-l6-cos-v1';
-const answerTimeoutMs = 18000;
+export type StudyToolMode = 'mcq' | 'fill_blank' | 'essay';
+
+const heavyAnswerTimeoutMs = 30000;
 const quizItemCount = 10;
 const flashcardItemCount = 20;
+const generationConfig = {
+  temperature: 0.2,
+  topP: 0.82,
+  minP: 0.05,
+  repetitionPenalty: 1.08,
+  outputTokenBatchSize: 4,
+  batchTimeInterval: 80,
+};
 
 export function useOfflineAi(bookId: string, bookTitle: string) {
-  const [shouldLoadModel, setShouldLoadModel] = useState(false);
+  const [shouldLoadEmbeddings, setShouldLoadEmbeddings] = useState(false);
+  const [shouldLoadLlm, setShouldLoadLlm] = useState(false);
   const [hasCheckedDownload, setHasCheckedDownload] = useState(false);
   const llm = useLLM({
-    model: models.llm.qwen2_5_0_5b({ quant: true }),
-    preventLoad: !shouldLoadModel,
+    model: offlineLlmModel,
+    preventLoad: !shouldLoadLlm,
   });
   const embeddings = useTextEmbeddings({
-    model: MULTI_QA_MINILM_L6_COS_V1,
-    preventLoad: !shouldLoadModel,
+    model: offlineEmbeddingModel,
+    preventLoad: !shouldLoadEmbeddings,
   });
 
   useEffect(() => {
     let isActive = true;
 
-    getAppSetting(modelDownloadedKey).then((value) => {
-      if (isActive && value === 'true') {
-        setShouldLoadModel(true);
-      }
-      if (isActive) {
-        setHasCheckedDownload(true);
-      }
-    });
+    Promise.all([
+      getAppSetting(modelDownloadedKey),
+      getAppSetting(modelProfileKey),
+    ])
+      .then(([downloadedValue, profileValue]) => {
+        if (isActive && downloadedValue === 'true' && profileValue === offlineModelProfile) {
+          setShouldLoadEmbeddings(true);
+        }
+      })
+      .finally(() => {
+        if (isActive) {
+          setHasCheckedDownload(true);
+        }
+      });
 
     return () => {
       isActive = false;
@@ -78,7 +99,7 @@ export function useOfflineAi(bookId: string, bookTitle: string) {
         };
       }
 
-      if (!shouldLoadModel) {
+      if (!shouldLoadEmbeddings) {
         return {
           text: 'Please prepare the study helper from My Books first.',
           sources: [],
@@ -125,6 +146,21 @@ export function useOfflineAi(bookId: string, bookTitle: string) {
         };
       }
 
+      if (llm.error) {
+        return {
+          text: 'The larger study helper had trouble opening on this device. Please close other apps and try again, or switch back to the lighter study helper.',
+          sources: chunks.map(formatSourceLabel),
+        };
+      }
+
+      if (!shouldLoadLlm) {
+        setShouldLoadLlm(true);
+        return {
+          text: 'I found your lesson. The larger study helper is opening now, so please ask again in a moment.',
+          sources: chunks.map(formatSourceLabel),
+        };
+      }
+
       if (!llm.isReady) {
         const progress = Math.round(llm.downloadProgress * 100);
         return {
@@ -133,10 +169,13 @@ export function useOfflineAi(bookId: string, bookTitle: string) {
         };
       }
 
+      llm.configure({ generationConfig });
+
       const answer = await withTimeout(
         llm.generate(buildGroundedMessages(question, chunks) as Message[]),
-        answerTimeoutMs,
-        ''
+        heavyAnswerTimeoutMs,
+        '',
+        llm.interrupt
       );
 
       const cleanAnswer = answer.trim();
@@ -148,11 +187,14 @@ export function useOfflineAi(bookId: string, bookTitle: string) {
         sources: chunks.map(formatSourceLabel),
       };
     },
-    [bookId, embeddings, hasCheckedDownload, llm, shouldLoadModel]
+    [bookId, embeddings, hasCheckedDownload, llm, shouldLoadEmbeddings, shouldLoadLlm]
   );
 
   const generateStudyTool = useCallback(
-    async (tool: 'quiz' | 'flashcards'): Promise<OfflineAiResponse> => {
+    async (
+      tool: 'quiz' | 'flashcards',
+      mode: StudyToolMode = 'mcq'
+    ): Promise<OfflineAiResponse> => {
       if (!hasCheckedDownload) {
         return {
           text: 'Checking your saved study helper...',
@@ -160,7 +202,7 @@ export function useOfflineAi(bookId: string, bookTitle: string) {
         };
       }
 
-      if (!shouldLoadModel) {
+      if (!shouldLoadEmbeddings) {
         return {
           text: 'Please prepare the study helper from My Books first.',
           sources: [],
@@ -178,7 +220,7 @@ export function useOfflineAi(bookId: string, bookTitle: string) {
 
       const query =
         tool === 'quiz'
-          ? `important quiz topics from ${bookTitle}`
+          ? `${mode} quiz topics from ${bookTitle}`
           : `key terms and concepts from ${bookTitle}`;
       const queryEmbedding = embeddings.isReady
         ? await embeddings.forward(query)
@@ -196,7 +238,7 @@ export function useOfflineAi(bookId: string, bookTitle: string) {
         };
       }
 
-      const toolText = buildSimpleStudyToolFallback(tool, chunks);
+      const toolText = buildSimpleStudyToolFallback(tool, chunks, mode);
 
       try {
         await saveGeneratedStudyTool(
@@ -214,18 +256,18 @@ export function useOfflineAi(bookId: string, bookTitle: string) {
         sources: chunks.map(formatSourceLabel),
       };
     },
-    [bookId, bookTitle, embeddings, hasCheckedDownload, shouldLoadModel]
+    [bookId, bookTitle, embeddings, hasCheckedDownload, shouldLoadEmbeddings]
   );
 
   const embedLessonText = useCallback(
     async (text: string): Promise<Float32Array | null> => {
-      if (!shouldLoadModel || !embeddings.isReady) {
+      if (!shouldLoadEmbeddings || !embeddings.isReady) {
         return null;
       }
 
       return embeddings.forward(text);
     },
-    [embeddings, shouldLoadModel]
+    [embeddings, shouldLoadEmbeddings]
   );
 
   return {
@@ -235,7 +277,7 @@ export function useOfflineAi(bookId: string, bookTitle: string) {
     embeddingModelName,
     isAvailable,
     hasCheckedDownload,
-    shouldLoadModel,
+    shouldLoadModel: shouldLoadEmbeddings,
     isModelReady: llm.isReady,
     isEmbeddingReady: embeddings.isReady,
     isGenerating: llm.isGenerating,
@@ -278,14 +320,28 @@ async function saveGeneratedStudyTool(
 function withTimeout<T>(
   promise: Promise<T>,
   timeoutMs: number,
-  fallback: T
+  fallback: T,
+  onTimeout?: () => void
 ): Promise<T> {
   return new Promise((resolve) => {
-    const timer = setTimeout(() => resolve(fallback), timeoutMs);
+    let didTimeout = false;
+    const timer = setTimeout(() => {
+      didTimeout = true;
+      onTimeout?.();
+      resolve(fallback);
+    }, timeoutMs);
 
     promise
-      .then((value) => resolve(value))
-      .catch(() => resolve(fallback))
+      .then((value) => {
+        if (!didTimeout) {
+          resolve(value);
+        }
+      })
+      .catch(() => {
+        if (!didTimeout) {
+          resolve(fallback);
+        }
+      })
       .finally(() => clearTimeout(timer));
   });
 }
@@ -392,37 +448,49 @@ function getKeyPhrase(sentence: string, fallbackIndex: number) {
   return `lesson detail ${fallbackIndex + 1}`;
 }
 
+type LessonFact = {
+  term: string;
+  detail: string;
+  sourceText: string;
+};
+
 function buildSimpleStudyToolFallback(
   tool: 'quiz' | 'flashcards',
-  chunks: { text: string }[]
+  chunks: { text: string }[],
+  mode: StudyToolMode = 'mcq'
 ) {
-  const sentences = uniqueTexts(splitSentences(chunks));
-  const baseSnippets = (sentences.length > 0
+  const facts = extractLessonFacts(chunks);
+  const sentences = facts.length > 0
+    ? facts.map((fact) => fact.sourceText)
+    : uniqueTexts(splitSentences(chunks));
+  const baseSnippets = sentences.length > 0
     ? sentences
-    : chunks.map((chunk) => cleanChunkText(chunk.text)).filter(Boolean)
-  );
+    : chunks.map((chunk) => cleanChunkText(chunk.text)).filter(Boolean);
   const targetCount = tool === 'quiz' ? quizItemCount : flashcardItemCount;
-  const snippets = repeatToCount(baseSnippets, targetCount);
+  const repeatedFacts = repeatToCount(
+    facts.length > 0 ? facts : buildFactsFromSnippets(baseSnippets),
+    targetCount
+  );
 
   if (tool === 'flashcards') {
-    return snippets
-      .map((snippet, index) =>
+    return repeatedFacts
+      .map((fact) =>
         [
-          `Front: What should you remember about ${getKeyPhrase(snippet, index)}?`,
-          `Back: ${shortText(snippet, 240)}`,
+          `Front: ${fact.term}`,
+          `Back: ${shortText(fact.detail, 240)}`,
         ].join('\n')
       )
       .join('\n\n');
   }
 
-  return snippets
-    .map((snippet, index) =>
-      buildFallbackQuizQuestion(snippet, snippets, index)
+  return repeatedFacts
+    .map((fact, index) =>
+      buildFallbackQuizQuestion(fact, repeatedFacts, index, mode)
     )
     .join('\n\n');
 }
 
-function repeatToCount(items: string[], count: number) {
+function repeatToCount<T>(items: T[], count: number) {
   if (items.length === 0) {
     return [];
   }
@@ -430,30 +498,229 @@ function repeatToCount(items: string[], count: number) {
   return Array.from({ length: count }, (_, index) => items[index % items.length]);
 }
 
-function buildFallbackQuizQuestion(
-  snippet: string,
-  allSnippets: string[],
-  index: number
-) {
-  const correct = shortText(snippet, 150);
-  const wrongOptions = allSnippets
-    .filter((item) => item !== snippet)
-    .slice(index, index + 3)
-    .map((item) => shortText(item, 120));
-  const options = [
-    correct,
-    wrongOptions[0] ?? 'It is not discussed in the uploaded PDF.',
-    wrongOptions[1] ?? 'The PDF gives no detail about this topic.',
-    wrongOptions[2] ?? 'This is unrelated to the lesson source.',
+function extractLessonFacts(chunks: { text: string }[]): LessonFact[] {
+  const facts = splitSentences(chunks)
+    .map(parseLessonFact)
+    .filter((fact): fact is LessonFact => Boolean(fact));
+
+  return uniqueFacts(facts);
+}
+
+function buildFactsFromSnippets(snippets: string[]): LessonFact[] {
+  return uniqueTexts(snippets)
+    .map((snippet, index) => ({
+      term: titleCase(getKeyPhrase(snippet, index)),
+      detail: shortText(snippet, 220),
+      sourceText: snippet,
+    }))
+    .filter((fact) => isUsefulTerm(fact.term) && fact.detail.length > 20);
+}
+
+function parseLessonFact(sentence: string): LessonFact | null {
+  const cleanSentence = cleanChunkText(sentence);
+  const patterns = [
+    /^(.{2,70}?)(?:\s+-\s+|\s*[:\u2013\u2014]\s*)(.+)$/i,
+    /^(.{2,70}?)\s+(is|are|means|refers to|describes|uses|is used for|is used to|are used for|are used to)\s+(.+)$/i,
   ];
 
+  for (const pattern of patterns) {
+    const match = cleanSentence.match(pattern);
+
+    if (!match) {
+      continue;
+    }
+
+    const rawTerm = cleanStudyTerm(match[1]);
+    const rawDetail = match.length >= 4
+      ? `${match[2]} ${match[3]}`
+      : match[2];
+    const detail = cleanStudyDetail(rawDetail, rawTerm);
+
+    if (isUsefulTerm(rawTerm) && detail.length >= 18) {
+      return {
+        term: rawTerm,
+        detail,
+        sourceText: cleanSentence,
+      };
+    }
+  }
+
+  return null;
+}
+
+function cleanStudyTerm(term: string) {
+  return titleCase(
+    term
+      .replace(/^\W+|\W+$/g, '')
+      .replace(/^(the|a|an)\s+/i, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+  );
+}
+
+function cleanStudyDetail(detail: string, term: string) {
+  return detail
+    .replace(new RegExp(`\\b${escapeRegExp(term)}\\b`, 'gi'), '_____')
+    .replace(/\s+/g, ' ')
+    .replace(/^\W+/, '')
+    .trim();
+}
+
+function isUsefulTerm(term: string) {
+  const normalized = term.toLowerCase();
+
+  return (
+    term.length >= 3 &&
+    term.length <= 70 &&
+    !normalized.includes('question') &&
+    !normalized.includes('answer') &&
+    !normalized.includes('according') &&
+    !normalized.includes('pdf') &&
+    !/^\d+$/.test(normalized)
+  );
+}
+
+function uniqueFacts(facts: LessonFact[]) {
+  const seen = new Set<string>();
+  const unique: LessonFact[] = [];
+
+  for (const fact of facts) {
+    const key = normalizeOption(fact.term);
+
+    if (!key || seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    unique.push(fact);
+  }
+
+  return unique;
+}
+
+function buildFallbackQuizQuestion(
+  fact: LessonFact,
+  allFacts: LessonFact[],
+  index: number,
+  mode: StudyToolMode
+) {
+  if (mode === 'fill_blank') {
+    return [
+      `Question: ${buildFillBlankQuestion(fact)}`,
+      `Answer: ${fact.term}`,
+      `Explanation: ${fact.term}: ${shortText(fact.detail.replace(/_____+/g, fact.term), 180)}`,
+    ].join('\n');
+  }
+
+  if (mode === 'essay') {
+    return [
+      `Question: Explain ${fact.term} in your own words. Include why it matters in the lesson.`,
+      `Answer: ${fact.term}: ${shortText(fact.detail.replace(/_____+/g, fact.term), 220)}`,
+      `Explanation: Use the lesson idea, then add one clear example.`,
+    ].join('\n');
+  }
+
+  const options = buildUniqueOptions(fact, allFacts, index);
+  const correctIndex = options.findIndex((option) => option === fact.term);
+  const answerLetter = String.fromCharCode(65 + Math.max(0, correctIndex));
+
   return [
-    `Question: According to the PDF, which statement about ${getKeyPhrase(snippet, index)} is correct?`,
+    `Question: ${buildDefinitionQuestion(fact)}`,
     `A. ${options[0]}`,
     `B. ${options[1]}`,
     `C. ${options[2]}`,
     `D. ${options[3]}`,
-    `Correct answer: A. ${options[0]}`,
-    `Explanation: ${shortText(snippet, 180)}`,
+    `Correct answer: ${answerLetter}. ${fact.term}`,
+    `Explanation: ${fact.term}: ${shortText(fact.detail.replace(/_____+/g, fact.term), 180)}`,
   ].join('\n');
+}
+
+function buildDefinitionQuestion(fact: LessonFact) {
+  const detail = fact.detail.replace(/_____+/g, 'it');
+  const prompt = detail.charAt(0).toUpperCase() + detail.slice(1);
+
+  return `${shortText(prompt, 150)} What is being described?`;
+}
+
+function buildFillBlankQuestion(fact: LessonFact) {
+  if (fact.detail.includes('_____')) {
+    return shortText(fact.detail, 170);
+  }
+
+  return `_____ ${shortText(fact.detail, 155)}`;
+}
+
+function buildUniqueOptions(
+  fact: LessonFact,
+  allFacts: LessonFact[],
+  index: number
+) {
+  const distractors = [
+    ...allFacts.map((item) => item.term),
+    'Software',
+    'Digital Tool',
+    'Hardware',
+    'Application',
+    'System',
+    'Data',
+  ].filter((term) => normalizeOption(term) !== normalizeOption(fact.term));
+  const uniqueDistractors = uniqueByNormalized(distractors).slice(0, 12);
+  const selectedDistractors = rotateItems(uniqueDistractors, index).slice(0, 3);
+  const paddedOptions = uniqueByNormalized([
+    fact.term,
+    ...selectedDistractors,
+    'Software',
+    'Digital Tool',
+    'Hardware',
+  ]).slice(0, 4);
+
+  return rotateItems(paddedOptions, index).slice(0, 4);
+}
+
+function rotateItems<T>(items: T[], offset: number) {
+  if (items.length === 0) {
+    return items;
+  }
+
+  const start = offset % items.length;
+  return [...items.slice(start), ...items.slice(0, start)];
+}
+
+function uniqueByNormalized(items: string[]) {
+  const seen = new Set<string>();
+  const unique: string[] = [];
+
+  for (const item of items) {
+    const cleanItem = cleanStudyTerm(item);
+    const key = normalizeOption(cleanItem);
+
+    if (!key || seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    unique.push(cleanItem);
+  }
+
+  return unique;
+}
+
+function normalizeOption(value: string) {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+function titleCase(value: string) {
+  return value
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((word) =>
+      word.length <= 3 && word === word.toUpperCase()
+        ? word
+        : `${word.charAt(0).toUpperCase()}${word.slice(1)}`
+    )
+    .join(' ');
+}
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }

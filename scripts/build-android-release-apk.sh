@@ -19,7 +19,8 @@ JAVA_VERSION="$("$JAVA_HOME/bin/java" -version 2>&1 | sed -n '1p')"
 echo "Using Java: $JAVA_VERSION"
 
 cd "$ANDROID_DIR"
-NODE_ENV=production ./gradlew assembleRelease
+./gradlew --stop
+NODE_ENV=production ./gradlew --no-daemon --no-parallel assembleRelease
 
 echo
 echo "APK ready:"

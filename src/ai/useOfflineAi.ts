@@ -10,7 +10,8 @@ export function useOfflineAi(_bookId?: string, _bookTitle?: string) {
   });
 
   const generateStudyTool = async (
-    _tool?: 'quiz' | 'flashcards'
+    _tool?: 'quiz' | 'flashcards',
+    _mode?: 'mcq' | 'fill_blank' | 'essay'
   ): Promise<OfflineAiResponse> => ({
     text: 'Quizzes and flashcards are not available in this preview yet.',
     sources: [],

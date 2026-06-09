@@ -100,6 +100,25 @@ export function Sources({
       return;
     }
 
+    Alert.alert(
+      'Allow PDF access?',
+      'Project Alab will open your file picker so you can choose one lesson PDF for this book.',
+      [
+        {
+          text: 'Not now',
+          style: 'cancel',
+        },
+        {
+          text: 'Choose PDF',
+          onPress: () => {
+            void pickAndSavePdf();
+          },
+        },
+      ]
+    );
+  };
+
+  const pickAndSavePdf = async () => {
     setIsUploading(true);
 
     try {

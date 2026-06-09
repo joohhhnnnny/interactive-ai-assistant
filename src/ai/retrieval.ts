@@ -12,6 +12,7 @@ export type RetrievedChunk = SourceChunk & {
 
 const minimumSimilarity = 0.24;
 const minimumFallbackScore = 0.35;
+const maxGroundedChunkCharacters = 900;
 const searchStopWords = new Set([
   'about',
   'after',
@@ -199,7 +200,7 @@ export function buildGroundedMessages(question: string, chunks: RetrievedChunk[]
         `source: ${formatSourceLabel(chunk)}`,
         `chunk_id: ${chunk.id}`,
         `score: ${chunk.score.toFixed(3)}`,
-        chunk.text.trim(),
+        trimContextText(chunk.text),
       ].join('\n')
     )
     .join('\n\n');
@@ -217,6 +218,16 @@ export function buildGroundedMessages(question: string, chunks: RetrievedChunk[]
   ];
 }
 
+function trimContextText(text: string) {
+  const cleanText = text.replace(/\s+/g, ' ').trim();
+
+  if (cleanText.length <= maxGroundedChunkCharacters) {
+    return cleanText;
+  }
+
+  return `${cleanText.slice(0, maxGroundedChunkCharacters).replace(/\s+\S*$/, '')}...`;
+}
+
 export function buildStudyToolMessages(
   tool: 'quiz' | 'flashcards',
   bookTitle: string,
@@ -224,8 +235,8 @@ export function buildStudyToolMessages(
 ) {
   const request =
     tool === 'quiz'
-      ? 'Create exactly 10 quiz questions from only this lesson context. Ask about concrete facts, definitions, and ideas from the PDF. Do not ask vague questions like "what is this review about". Use this plain format with each field on its own line and no markdown:\nQuestion: ...\nA. ...\nB. ...\nC. ...\nD. ...\nCorrect answer: A. ...\nExplanation: ...'
-      : 'Create exactly 20 concise flashcards from only this lesson context. Each front must ask for a real term, fact, or idea from the PDF. Use this plain format with each field on its own line and no markdown:\nFront: ...\nBack: ...';
+      ? 'Create exactly 10 quiz questions from only this lesson context. Ask about concrete facts, definitions, and ideas from the lesson. Do not use phrases like "according to the PDF" or "uploaded PDF". Make every multiple-choice option unique. Use this plain format with each field on its own line and no markdown:\nQuestion: ...\nA. ...\nB. ...\nC. ...\nD. ...\nCorrect answer: A. ...\nExplanation: ...'
+      : 'Create exactly 20 concise flashcards from only this lesson context. Each front must ask for a real term, fact, or idea from the lesson. Do not use phrases like "according to the PDF" or "uploaded PDF". Use this plain format with each field on its own line and no markdown:\nFront: ...\nBack: ...';
 
   return buildGroundedMessages(
     `${request}\nBook title: ${bookTitle}`,

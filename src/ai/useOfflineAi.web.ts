@@ -9,7 +9,10 @@ export function useOfflineAi() {
     sources: [],
   });
 
-  const generateStudyTool = async (): Promise<OfflineAiResponse> => ({
+  const generateStudyTool = async (
+    _tool?: 'quiz' | 'flashcards',
+    _mode?: 'mcq' | 'fill_blank' | 'essay'
+  ): Promise<OfflineAiResponse> => ({
     text: 'Quizzes and flashcards are not available in this preview yet.',
     sources: [],
   });

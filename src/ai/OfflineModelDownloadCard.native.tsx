@@ -1,7 +1,17 @@
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { useOfflineStudyHelperStatus } from './useOfflineStudyHelperStatus';
 
-type StudyHelperStatus = ReturnType<typeof useOfflineStudyHelperStatus>;
+type StudyHelperStatus = {
+  isAvailable: boolean;
+  isChecking: boolean;
+  isReady: boolean;
+  isLoading: boolean;
+  progress: number;
+  error: unknown;
+  recoveryMessage: string | null;
+  deviceWarning?: string | null;
+  startDownload: () => void | Promise<boolean>;
+};
 
 type OfflineModelDownloadCardProps = {
   helper?: StudyHelperStatus;
@@ -22,6 +32,7 @@ function OfflineModelDownloadCardWithHook() {
 }
 
 function OfflineModelDownloadCardView({ helper }: { helper: StudyHelperStatus }) {
+  const deviceWarning = helper.deviceWarning ?? null;
 
   if (helper.isChecking) {
     return (
@@ -55,15 +66,26 @@ function OfflineModelDownloadCardView({ helper }: { helper: StudyHelperStatus })
           Prepare once, then use ALAB with your saved lessons even when you are
           offline.
         </Text>
+        {helper.recoveryMessage ? (
+          <Text style={styles.note}>{helper.recoveryMessage}</Text>
+        ) : null}
+        {deviceWarning && !helper.recoveryMessage ? (
+          <Text style={styles.note}>{deviceWarning}</Text>
+        ) : null}
+        {helper.isLoading ? (
+          <Text style={styles.note}>
+            Keep this screen open while ALAB prepares the study helper.
+          </Text>
+        ) : null}
       </View>
 
       <Pressable
         onPress={helper.startDownload}
-        disabled={helper.isLoading}
+        disabled={helper.isLoading || Boolean(deviceWarning)}
         style={({ pressed }) => [
           styles.button,
           pressed && styles.buttonPressed,
-          helper.isLoading && styles.disabledButton,
+          (helper.isLoading || deviceWarning) && styles.disabledButton,
         ]}
       >
         <Text style={styles.buttonText}>
@@ -105,6 +127,12 @@ const styles = StyleSheet.create({
     fontSize: 14,
     lineHeight: 20,
     fontWeight: '400',
+  },
+  note: {
+    color: '#6a3f00',
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: '600',
   },
   button: {
     minHeight: 48,

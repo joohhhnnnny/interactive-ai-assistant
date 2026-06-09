@@ -256,6 +256,24 @@ export const styles = StyleSheet.create({
   disabledChatInput: {
     opacity: 0.55,
   },
+  voiceButton: {
+    marginLeft: 4,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#ffffff',
+    borderWidth: 1,
+    borderColor: '#c4c5d5',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  listeningVoiceButton: {
+    backgroundColor: '#e12531',
+    borderColor: '#e12531',
+  },
+  disabledVoiceButton: {
+    opacity: 0.5,
+  },
   sendButton: {
     marginLeft: 4,
     width: 40,
