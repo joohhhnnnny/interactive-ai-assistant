@@ -1,11 +1,11 @@
 import { useEffect, useRef } from 'react';
 import {
-    Animated,
-    Easing,
-    Image,
-    StyleSheet,
-    Text,
-    View,
+  Animated,
+  Easing,
+  Image,
+  StyleSheet,
+  Text,
+  View,
 } from 'react-native';
 import { Screen } from '../../components/layout/Screen';
 
@@ -77,7 +77,7 @@ export function LoadingScreen({ onComplete }: LoadingScreenProps) {
 
           <Text style={styles.appName}>ALAB</Text>
           <Text style={styles.tagline}>Your Study Companion</Text>
-          <Text style={styles.version}>v2026-06-17-2</Text>
+          <Text style={styles.version}>v2026-06-17-3</Text>
         </View>
 
         <View style={styles.progressArea}>

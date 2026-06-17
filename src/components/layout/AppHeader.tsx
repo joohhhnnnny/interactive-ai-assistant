@@ -2,6 +2,7 @@ import { File } from 'expo-file-system';
 import { useEffect, useState } from 'react';
 import {
   Image,
+  Modal,
   Platform,
   Pressable,
   StyleSheet,
@@ -207,27 +208,42 @@ export function AppHeader({ onBooksChanged, onProfileUpdated }: AppHeaderProps) 
         </View>
       </View>
 
-      {profileMenuOpen ? (
-        <View style={styles.profileMenu}>
-          <Text style={styles.profileMenuName} numberOfLines={1}>
-            {profile ? `${profile.firstName} ${profile.lastName}` : 'Student'}
-          </Text>
-
+      <Modal
+        transparent
+        visible={profileMenuOpen}
+        animationType="none"
+        onRequestClose={() => setProfileMenuOpen(false)}
+        statusBarTranslucent
+      >
+        <View style={styles.profileMenuRoot}>
           <Pressable
-            onPress={() => {
-              setProfileMenuOpen(false);
-              setEditingName(true);
-              setProfileSheetOpen(true);
-            }}
-            style={({ pressed }) => [
-              styles.profileMenuOption,
-              pressed && styles.pressed,
-            ]}
-          >
-            <Text style={styles.profileMenuOptionText}>Change name</Text>
-          </Pressable>
+            accessibilityRole="button"
+            accessibilityLabel="Close profile menu"
+            style={styles.profileMenuBackdrop}
+            onPress={() => setProfileMenuOpen(false)}
+          />
+
+          <View style={styles.profileMenu}>
+            <Text style={styles.profileMenuName} numberOfLines={1}>
+              {profile ? `${profile.firstName} ${profile.lastName}` : 'Student'}
+            </Text>
+
+            <Pressable
+              onPress={() => {
+                setProfileMenuOpen(false);
+                setEditingName(true);
+                setProfileSheetOpen(true);
+              }}
+              style={({ pressed }) => [
+                styles.profileMenuOption,
+                pressed && styles.pressed,
+              ]}
+            >
+              <Text style={styles.profileMenuOptionText}>Change name</Text>
+            </Pressable>
+          </View>
         </View>
-      ) : null}
+      </Modal>
 
       <BottomSheet
         visible={profileSheetOpen}
@@ -510,6 +526,16 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
+  },
+  profileMenuRoot: {
+    flex: 1,
+  },
+  profileMenuBackdrop: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
   },
   profileMenu: {
     position: 'absolute',

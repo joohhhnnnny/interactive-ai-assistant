@@ -5,12 +5,12 @@ import {
   Keyboard,
   Modal,
   Pressable,
-  ScrollView,
   StyleSheet,
   Text,
   useWindowDimensions,
   View,
 } from 'react-native';
+import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 type BottomSheetProps = {
@@ -128,12 +128,15 @@ export function BottomSheet({
             </Pressable>
           </View>
 
-          <ScrollView
+          <KeyboardAwareScrollView
+            bottomOffset={Math.max(insets.bottom, 18) + 24}
+            extraKeyboardSpace={12}
             keyboardShouldPersistTaps="handled"
             contentContainerStyle={styles.content}
+            showsVerticalScrollIndicator={false}
           >
             {children}
-          </ScrollView>
+          </KeyboardAwareScrollView>
         </Animated.View>
       </View>
     </Modal>

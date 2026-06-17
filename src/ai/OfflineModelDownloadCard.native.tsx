@@ -4,6 +4,7 @@ import { useOfflineStudyHelperStatus } from './useOfflineStudyHelperStatus';
 type StudyHelperStatus = {
   isAvailable: boolean;
   isChecking: boolean;
+  isSearchReady: boolean;
   isReady: boolean;
   isLoading: boolean;
   progress: number;
@@ -74,9 +75,15 @@ function OfflineModelDownloadCardView({ helper }: { helper: StudyHelperStatus })
       <View style={styles.copy}>
         <Text style={styles.title}>Study helper</Text>
         <Text style={styles.body}>
-          Prepare once, then use ALAB with your saved lessons even when you are
-          offline.
+          {helper.isSearchReady
+            ? 'Lesson search is ready. Finish preparing the answer helper for richer offline answers.'
+            : 'Prepare lesson search first, then ALAB can index your uploaded PDFs for better matching.'}
         </Text>
+        {helper.isSearchReady ? (
+          <Text style={styles.readyNote}>
+            PDF semantic search is ready.
+          </Text>
+        ) : null}
         {helper.recoveryMessage ? (
           <Text style={styles.note}>{helper.recoveryMessage}</Text>
         ) : null}
@@ -128,7 +135,9 @@ function OfflineModelDownloadCardView({ helper }: { helper: StudyHelperStatus })
         <Text style={styles.buttonText}>
           {helper.isLoading
             ? `Processing ${helper.progress}%`
-            : 'Prepare Study Helper'}
+            : helper.isSearchReady
+              ? 'Prepare Answer Helper'
+              : 'Prepare Study Helper'}
         </Text>
       </Pressable>
     </View>
@@ -170,6 +179,12 @@ const styles = StyleSheet.create({
     fontSize: 13,
     lineHeight: 18,
     fontWeight: '600',
+  },
+  readyNote: {
+    color: '#166534',
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: '700',
   },
   statusBox: {
     gap: 8,

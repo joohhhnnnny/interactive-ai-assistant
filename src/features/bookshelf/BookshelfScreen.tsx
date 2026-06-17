@@ -75,7 +75,8 @@ export function BookshelfScreen({
   const [isSaving, setIsSaving] = useState(false);
   const studyHelper = useOfflineStudyHelperStatus();
   const isTablet = width >= 700;
-  const canCreateBook = Platform.OS === 'web' || studyHelper.isReady;
+  const canCreateBook =
+    Platform.OS === 'web' || studyHelper.isSearchReady || studyHelper.isReady;
   const containerWidth = Math.min(width, isTablet ? 980 : 448);
   const horizontalPadding = isTablet ? 64 : 40;
   const gridGap = isTablet ? 18 : 14;

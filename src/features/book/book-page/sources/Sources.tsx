@@ -4,6 +4,7 @@ import * as Sharing from 'expo-sharing';
 import { useEffect, useState } from 'react';
 import { Alert, Platform, Pressable, ScrollView, Text, useWindowDimensions, View } from 'react-native';
 import { processSourcePdfPlaceholder } from '../../../../ai/sourceProcessing';
+import type { SourceProcessingProgress } from '../../../../ai/sourceProcessing';
 import { IconDots, IconPDF, IconPlus } from '../../../../components/icons/icons';
 import { BottomSheet } from '../../../../components/ui/BottomSheet';
 import { SheetTextInput } from '../../../../components/ui/SheetTextInput';
@@ -24,6 +25,10 @@ type Source = Pick<
 
 const maxSourcesPerBook = 5;
 
+type UploadProgress = SourceProcessingProgress & {
+  sourceName?: string;
+};
+
 export function Sources({
   book,
   offlineAi,
@@ -37,6 +42,10 @@ export function Sources({
   const isTablet = width >= 700;
   const [sources, setSources] = useState<Source[]>([]);
   const [isUploading, setIsUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<UploadProgress | null>(null);
+  const [sourceProgressById, setSourceProgressById] = useState<
+    Record<string, SourceProcessingProgress>
+  >({});
   const [menuSourceId, setMenuSourceId] = useState<string | null>(null);
   const [sourceToRename, setSourceToRename] = useState<Source | null>(null);
   const [renameValue, setRenameValue] = useState('');
@@ -44,6 +53,9 @@ export function Sources({
   const [sourceToRemove, setSourceToRemove] = useState<Source | null>(null);
   const [isRemovingSource, setIsRemovingSource] = useState(false);
   const hasReachedSourceLimit = sources.length >= maxSourcesPerBook;
+  const visibleSources = sources.filter(
+    (source) => !sourceProgressById[source.id]
+  );
 
   useEffect(() => {
     let isActive = true;
@@ -87,6 +99,21 @@ export function Sources({
     return name.toLowerCase().endsWith('.pdf') ? name : `${name}.pdf`;
   };
 
+  const getUploadErrorMessage = (error: unknown) => {
+    const code =
+      typeof error === 'object' && error && 'code' in error
+        ? String((error as { code?: unknown }).code)
+        : 'UPLOAD_ERROR';
+    const message =
+      typeof error === 'object' && error && 'message' in error
+        ? String((error as { message?: unknown }).message).trim()
+        : '';
+
+    return message
+      ? `Please try choosing the PDF again. (${code}: ${message})`
+      : `Please try choosing the PDF again. (${code})`;
+  };
+
   const handleUpload = async () => {
     if (isUploading) {
       return;
@@ -120,6 +147,11 @@ export function Sources({
 
   const pickAndSavePdf = async () => {
     setIsUploading(true);
+    setUploadProgress({
+      phase: 'starting',
+      message: 'Waiting for PDF selection...',
+      percent: 0,
+    });
 
     try {
       const result = await DocumentPicker.getDocumentAsync({
@@ -139,6 +171,12 @@ export function Sources({
       let storedUri = selectedPdf.uri;
 
       if (Platform.OS !== 'web') {
+        setUploadProgress({
+          phase: 'starting',
+          message: 'Saving PDF to this book...',
+          percent: 1,
+          sourceName: safeName,
+        });
         const destinationDirectory = new Directory(
           Paths.document,
           'alab',
@@ -171,6 +209,13 @@ export function Sources({
         throw new Error('Source save failed');
       }
 
+      setUploadProgress({
+        phase: 'starting',
+        message: 'Queued for analysis...',
+        percent: 2,
+        sourceName: savedSource.name,
+      });
+
       setSources((previous) => [
         {
           id: savedSource.id,
@@ -182,6 +227,15 @@ export function Sources({
         },
         ...previous,
       ]);
+
+      setSourceProgressById((previous) => ({
+        ...previous,
+        [savedSource.id]: {
+          phase: 'starting',
+          message: 'Queued for analysis...',
+          percent: 2,
+        },
+      }));
 
       await processSourcePdfPlaceholder(savedSource.id, savedSource.fileUri, {
         embedText: offlineAi.embedLessonText,
@@ -198,6 +252,16 @@ export function Sources({
             )
           );
         },
+        onProgress: (progress) => {
+          setUploadProgress({
+            ...progress,
+            sourceName: savedSource.name,
+          });
+          setSourceProgressById((previous) => ({
+            ...previous,
+            [savedSource.id]: progress,
+          }));
+        },
       });
 
       const refreshedSources = await listSourcesWithProcessingByBook(book.id);
@@ -212,10 +276,17 @@ export function Sources({
         }))
       );
       onSourcesChanged();
-    } catch {
-      Alert.alert('Upload failed', 'Please try choosing the PDF again.');
+      setSourceProgressById((previous) => {
+        const next = { ...previous };
+        delete next[savedSource.id];
+        return next;
+      });
+    } catch (error) {
+      console.warn('ALAB PDF upload failed:', error);
+      Alert.alert('Upload failed', getUploadErrorMessage(error));
     } finally {
       setIsUploading(false);
+      setUploadProgress(null);
     }
   };
 
@@ -241,6 +312,11 @@ export function Sources({
       setSources((previous) =>
         previous.filter((source) => source.id !== sourceToRemove.id)
       );
+      setSourceProgressById((previous) => {
+        const next = { ...previous };
+        delete next[sourceToRemove.id];
+        return next;
+      });
       onSourcesChanged();
       setSourceToRemove(null);
       setMenuSourceId(null);
@@ -355,9 +431,11 @@ export function Sources({
           >
             <IconPlus color="#002576" size={12} />
             <Text style={styles.uploadButtonText}>
-              {isUploading ? 'Analyzing the book...' : 'Upload PDF'}
+              {isUploading ? 'Analyzing PDF...' : 'Upload PDF'}
             </Text>
           </Pressable>
+
+          {uploadProgress ? renderUploadProgress(uploadProgress) : null}
         </View>
       </View>
     );
@@ -390,94 +468,98 @@ export function Sources({
           <IconPlus color="#002576" size={12} />
           <Text style={styles.uploadButtonText}>
             {isUploading
-              ? 'ANALYZING THE BOOK...'
+              ? 'ANALYZING PDF...'
               : hasReachedSourceLimit
                 ? 'PDF LIMIT REACHED'
                 : 'UPLOAD PDF'}
           </Text>
         </Pressable>
 
+        {uploadProgress ? renderUploadProgress(uploadProgress) : null}
+
         <View style={styles.sourceList}>
-          {sources.map((source) => (
-            <View
-              key={source.id}
-              style={[
-                styles.sourceCard,
-                menuSourceId === source.id && styles.activeSourceCard,
-              ]}
-            >
-              <Pressable
-                onPress={() =>
-                  setMenuSourceId((current) =>
-                    current === source.id ? null : source.id
-                  )
-                }
-                style={({ pressed }) => [
-                  styles.sourceMenuButton,
-                  pressed && styles.pressedScale,
-                ]}
-                hitSlop={10}
-              >
-                <IconDots color="#1A1C1C" />
-              </Pressable>
-
-              {menuSourceId === source.id ? (
-                <View style={styles.sourceMenu}>
-                  <Pressable
-                    onPress={() => openRenameSource(source)}
-                    style={({ pressed }) => [
-                      styles.sourceMenuItem,
-                      pressed && styles.menuItemPressed,
-                    ]}
-                  >
-                    <Text style={styles.sourceMenuText}>Rename Source</Text>
-                  </Pressable>
-
-                  <Pressable
-                    onPress={() => handleDownloadSource(source)}
-                    style={({ pressed }) => [
-                      styles.sourceMenuItem,
-                      pressed && styles.menuItemPressed,
-                    ]}
-                  >
-                    <Text style={styles.sourceMenuText}>Download</Text>
-                  </Pressable>
-
-                  <Pressable
-                    onPress={() => {
-                      setSourceToRemove(source);
-                      setMenuSourceId(null);
-                    }}
-                    style={({ pressed }) => [
-                      styles.sourceMenuItem,
-                      pressed && styles.menuItemPressed,
-                    ]}
-                  >
-                    <Text style={styles.sourceMenuDangerText}>Remove Resource</Text>
-                  </Pressable>
-                </View>
-              ) : null}
-
-              <View style={styles.pdfIconCircle}>
-                <IconPDF color="#93000A" size={20} />
-              </View>
-
-              <Text style={styles.sourceName} numberOfLines={1}>
-                {source.name}
-              </Text>
-
-              <Text
+          {visibleSources.map((source) => {
+            return (
+              <View
+                key={source.id}
                 style={[
-                  styles.sourceStatus,
-                  source.processingStatus === 'ready' && styles.readyStatus,
-                  source.processingStatus === 'failed' && styles.failedStatus,
+                  styles.sourceCard,
+                  menuSourceId === source.id && styles.activeSourceCard,
                 ]}
-                numberOfLines={2}
               >
-                {formatProcessingStatus(source)}
-              </Text>
-            </View>
-          ))}
+                <Pressable
+                  onPress={() =>
+                    setMenuSourceId((current) =>
+                      current === source.id ? null : source.id
+                    )
+                  }
+                  style={({ pressed }) => [
+                    styles.sourceMenuButton,
+                    pressed && styles.pressedScale,
+                  ]}
+                  hitSlop={10}
+                >
+                  <IconDots color="#1A1C1C" />
+                </Pressable>
+
+                {menuSourceId === source.id ? (
+                  <View style={styles.sourceMenu}>
+                    <Pressable
+                      onPress={() => openRenameSource(source)}
+                      style={({ pressed }) => [
+                        styles.sourceMenuItem,
+                        pressed && styles.menuItemPressed,
+                      ]}
+                    >
+                      <Text style={styles.sourceMenuText}>Rename Source</Text>
+                    </Pressable>
+
+                    <Pressable
+                      onPress={() => handleDownloadSource(source)}
+                      style={({ pressed }) => [
+                        styles.sourceMenuItem,
+                        pressed && styles.menuItemPressed,
+                      ]}
+                    >
+                      <Text style={styles.sourceMenuText}>Download</Text>
+                    </Pressable>
+
+                    <Pressable
+                      onPress={() => {
+                        setSourceToRemove(source);
+                        setMenuSourceId(null);
+                      }}
+                      style={({ pressed }) => [
+                        styles.sourceMenuItem,
+                        pressed && styles.menuItemPressed,
+                      ]}
+                    >
+                      <Text style={styles.sourceMenuDangerText}>Remove Resource</Text>
+                    </Pressable>
+                  </View>
+                ) : null}
+
+                <View style={styles.pdfIconCircle}>
+                  <IconPDF color="#93000A" size={20} />
+                </View>
+
+                <Text style={styles.sourceName} numberOfLines={1}>
+                  {source.name}
+                </Text>
+
+                <Text
+                  style={[
+                    styles.sourceStatus,
+                    source.processingStatus === 'ready' && styles.readyStatus,
+                    source.processingStatus === 'failed' && styles.failedStatus,
+                  ]}
+                  numberOfLines={source.processingStatus === 'failed' ? 5 : 3}
+                >
+                  {formatProcessingStatus(source)}
+                </Text>
+              </View>
+            );
+          })}
         </View>
       </ScrollView>
 
@@ -561,13 +643,55 @@ export function Sources({
   );
 }
 
-function formatProcessingStatus(source: Source) {
+function renderUploadProgress(progress: UploadProgress) {
+  const title = progress.sourceName ?? 'PDF analysis';
+  const details = [
+    progress.current && progress.total
+      ? `${progress.current}/${progress.total}`
+      : null,
+    `${progress.percent}%`,
+  ].filter(Boolean);
+
+  return (
+    <View style={styles.uploadProgressCard}>
+      <Text style={styles.uploadProgressTitle} numberOfLines={1}>
+        {title}
+      </Text>
+      <Text style={styles.uploadProgressDetail}>
+        {progress.message}
+      </Text>
+      <View style={styles.uploadProgressTrack}>
+        <View
+          style={[
+            styles.uploadProgressFill,
+            { width: `${Math.max(4, progress.percent)}%` },
+          ]}
+        />
+      </View>
+      <Text style={styles.uploadProgressMeta}>
+        {details.join(' - ')}
+      </Text>
+    </View>
+  );
+}
+
+function formatProcessingStatus(
+  source: Source,
+  progress?: SourceProcessingProgress
+) {
+  if (progress) {
+    return progress.message;
+  }
+
   switch (source.processingStatus) {
     case 'pending':
+      return 'Queued for analysis...';
     case 'extracting':
+      return 'Reading PDF pages...';
     case 'chunking':
+      return 'Preparing study text...';
     case 'embedding':
-      return 'Analyzing the book...';
+      return 'Indexing study chunks...';
     case 'ready':
       return 'Ready to study';
     case 'failed':
