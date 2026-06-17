@@ -72,6 +72,22 @@ export function formatStudentOutput(text: string) {
   return normalizedLines.join('\n').replace(/\n{3,}/g, '\n\n').trim();
 }
 
+export function formatGeneralOutput(text: string) {
+  return cleanStudentReadableText(text)
+    .split('\n')
+    .map((line) => line.trimEnd())
+    .filter((line, index, lines) => {
+      if (line.trim()) {
+        return true;
+      }
+
+      return Boolean(lines[index - 1]?.trim() && lines[index + 1]?.trim());
+    })
+    .join('\n')
+    .replace(/\n{4,}/g, '\n\n')
+    .trim();
+}
+
 export function splitReadableSentences(text: string) {
   return cleanLessonText(text)
     .split(/(?<=[.!?])\s+|(?=\b(?:Question|Front|Back|Answer|Explanation|Correct answer)\s*:)/i)

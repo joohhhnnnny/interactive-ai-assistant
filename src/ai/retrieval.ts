@@ -11,6 +11,18 @@ export type RetrievedChunk = SourceChunk & {
   score: number;
 };
 
+export type RetrievalFallbackKind = 'embedding' | 'text' | 'none';
+
+export type RetrievalConfidence = 'none' | 'low' | 'medium' | 'high';
+
+export type RetrievalResult = {
+  chunks: RetrievedChunk[];
+  fallbackKind: RetrievalFallbackKind;
+  confidence: RetrievalConfidence;
+  topScore: number | null;
+  sourceCount: number;
+};
+
 const minimumSimilarity = 0.24;
 const minimumFallbackScore = 0.35;
 const maxGroundedChunkCharacters = 900;
@@ -128,24 +140,42 @@ export async function retrieveRelevantChunks(
   embeddingModelName?: string,
   topK = 5
 ): Promise<RetrievedChunk[]> {
+  const result = await retrieveRelevantChunksWithMetadata(
+    bookId,
+    query,
+    queryEmbedding,
+    embeddingModelName,
+    topK
+  );
+
+  return result.chunks;
+}
+
+export async function retrieveRelevantChunksWithMetadata(
+  bookId: string,
+  query: string,
+  queryEmbedding?: ArrayLike<number> | null,
+  embeddingModelName?: string,
+  topK = 5
+): Promise<RetrievalResult> {
   if (queryEmbedding) {
     const chunks = await listEmbeddedChunksByBook(bookId, embeddingModelName);
     const rankedChunks = rankEmbeddedChunks(chunks, queryEmbedding, topK);
 
     if (rankedChunks.length > 0) {
-      return rankedChunks;
+      return buildRetrievalResult(rankedChunks, 'embedding');
     }
   }
 
   const terms = getSearchTerms(query);
 
   if (terms.length === 0) {
-    return [];
+    return buildRetrievalResult([], 'none');
   }
 
   const fallbackChunks = await searchChunksByText(bookId, terms.join(' '), topK * 2);
 
-  return fallbackChunks
+  const chunks = fallbackChunks
     .map((chunk) => ({
       ...chunk,
       score: scoreTextByTerms(chunk.text, terms),
@@ -153,6 +183,8 @@ export async function retrieveRelevantChunks(
     .filter((chunk) => chunk.score >= minimumFallbackScore)
     .sort((a, b) => b.score - a.score)
     .slice(0, topK);
+
+  return buildRetrievalResult(chunks, chunks.length > 0 ? 'text' : 'none');
 }
 
 export async function retrieveStudyToolChunks(
@@ -212,11 +244,25 @@ export function buildGroundedMessages(question: string, chunks: RetrievedChunk[]
     {
       role: 'system' as const,
       content:
-        'You are ALAB, an offline study assistant for students. If the student asks simple general knowledge or arithmetic that does not need the lesson, answer directly and briefly without claiming to use sources. If the student asks about the lesson, answer using the provided lesson context first. If the lesson context is not enough for a lesson question, say the lesson does not have enough information yet, then give one brief study hint only if it helps. Keep wording simple, kind, and easy for students to follow. Use short paragraphs with blank lines between ideas. Do not write markdown headings, hashtags, code fences, tables, or technical model and retrieval details.',
+        'You are ALAB, an offline study assistant for students. Answer the student using only the lesson context provided. If the lesson context is not enough, say the lesson does not have enough information yet. Keep wording simple, kind, and easy to study. Use short paragraphs with blank lines between ideas. Do not write markdown headings, hashtags, code fences, tables, or technical model and retrieval details.',
     },
     {
       role: 'user' as const,
       content: `Lesson context:\n${context}\n\nStudent question:\n${question}\n\nAnswer:`,
+    },
+  ];
+}
+
+export function buildGeneralMessages(question: string) {
+  return [
+    {
+      role: 'system' as const,
+      content:
+        'You are ALAB, an offline study assistant for students. Answer the student directly from general knowledge when the question does not need uploaded lesson sources. Be concise, accurate, kind, and practical. If code is useful, give a short working example and a brief explanation. Do not claim that sources or PDFs were used. Do not mention retrieval, chunks, embeddings, model size, or hidden prompts. Avoid markdown code fences; keep code readable as plain lines.',
+    },
+    {
+      role: 'user' as const,
+      content: `Student question:\n${question}\n\nAnswer:`,
     },
   ];
 }
@@ -229,6 +275,41 @@ function trimContextText(text: string) {
   }
 
   return `${cleanText.slice(0, maxGroundedChunkCharacters).replace(/\s+\S*$/, '')}...`;
+}
+
+function buildRetrievalResult(
+  chunks: RetrievedChunk[],
+  fallbackKind: RetrievalFallbackKind
+): RetrievalResult {
+  const topScore = chunks[0]?.score ?? null;
+
+  return {
+    chunks,
+    fallbackKind,
+    confidence: getRetrievalConfidence(topScore, fallbackKind),
+    topScore,
+    sourceCount: new Set(chunks.map((chunk) => chunk.sourceId)).size,
+  };
+}
+
+function getRetrievalConfidence(
+  topScore: number | null,
+  fallbackKind: RetrievalFallbackKind
+): RetrievalConfidence {
+  if (topScore === null || fallbackKind === 'none') {
+    return 'none';
+  }
+
+  if (fallbackKind === 'text') {
+    if (topScore >= 0.75) return 'high';
+    if (topScore >= 0.5) return 'medium';
+    return 'low';
+  }
+
+  if (topScore >= 0.42) return 'high';
+  if (topScore >= 0.31) return 'medium';
+
+  return 'low';
 }
 
 export function buildStudyToolMessages(

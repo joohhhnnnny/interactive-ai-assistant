@@ -169,7 +169,9 @@ export function ALABChat({
         ? answer.sources.length > 0
           ? intent.tool
           : 'status'
-        : 'answer';
+        : answer.answerMode === 'status'
+          ? 'status'
+          : 'answer';
       const aiMessage: ChatMessage = {
         id: String(Date.now() + 1),
         role: 'ai',

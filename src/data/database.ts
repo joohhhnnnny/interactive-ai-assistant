@@ -64,6 +64,24 @@ type ChatMessageRow = {
   created_at: string;
 };
 
+export type AiAnswerMode = 'general' | 'grounded' | 'summary' | 'study_tool' | 'status';
+
+export type AiAnswerConfidence = 'none' | 'low' | 'medium' | 'high';
+
+export type AiPerformanceMetric = {
+  bookId: string;
+  answerMode: AiAnswerMode;
+  confidence?: AiAnswerConfidence;
+  retrievalMs?: number;
+  generationMs?: number;
+  totalMs?: number;
+  sourceCount?: number;
+  topScore?: number | null;
+  fallbackReason?: string | null;
+  outputLength?: number;
+  showedSources?: boolean;
+};
+
 export type Source = {
   id: string;
   bookId: string;
@@ -274,11 +292,29 @@ export async function initializeDatabase() {
       FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE CASCADE
     );
 
+    CREATE TABLE IF NOT EXISTS ai_performance_metrics (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      book_id INTEGER NOT NULL,
+      answer_mode TEXT NOT NULL,
+      confidence TEXT,
+      retrieval_ms INTEGER,
+      generation_ms INTEGER,
+      total_ms INTEGER,
+      source_count INTEGER NOT NULL DEFAULT 0,
+      top_score REAL,
+      fallback_reason TEXT,
+      output_length INTEGER NOT NULL DEFAULT 0,
+      showed_sources INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE CASCADE
+    );
+
     CREATE INDEX IF NOT EXISTS idx_source_pages_source_id ON source_pages(source_id);
     CREATE INDEX IF NOT EXISTS idx_source_pages_book_id ON source_pages(book_id);
     CREATE INDEX IF NOT EXISTS idx_source_chunks_source_id ON source_chunks(source_id);
     CREATE INDEX IF NOT EXISTS idx_source_chunks_book_id ON source_chunks(book_id);
     CREATE INDEX IF NOT EXISTS idx_chat_messages_book_id ON chat_messages(book_id);
+    CREATE INDEX IF NOT EXISTS idx_ai_performance_metrics_book_id ON ai_performance_metrics(book_id);
   `);
 
   const columns = await database.getAllAsync<{ name: string }>(
@@ -1035,6 +1071,49 @@ export async function appendChatMessage(
     kind: message.role === 'user' ? 'answer' : message.kind ?? 'answer',
     createdAt: now,
   } satisfies StoredChatMessage;
+}
+
+export async function saveAiPerformanceMetric(metric: AiPerformanceMetric) {
+  await initializeDatabase();
+
+  const numericId = Number(metric.bookId);
+
+  if (!Number.isFinite(numericId)) {
+    return;
+  }
+
+  const database = await getDatabase();
+  const now = new Date().toISOString();
+
+  await database.runAsync(
+    `INSERT INTO ai_performance_metrics (
+       book_id,
+       answer_mode,
+       confidence,
+       retrieval_ms,
+       generation_ms,
+       total_ms,
+       source_count,
+       top_score,
+       fallback_reason,
+       output_length,
+       showed_sources,
+       created_at
+     )
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    numericId,
+    metric.answerMode,
+    metric.confidence ?? null,
+    metric.retrievalMs ?? null,
+    metric.generationMs ?? null,
+    metric.totalMs ?? null,
+    metric.sourceCount ?? 0,
+    metric.topScore ?? null,
+    metric.fallbackReason ?? null,
+    metric.outputLength ?? 0,
+    metric.showedSources ? 1 : 0,
+    now
+  );
 }
 
 export async function pruneChatMessagesByBook(bookId: string, maxStudentTurns = 20) {

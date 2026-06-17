@@ -9,10 +9,10 @@ type MarkdownSegment = {
 };
 
 export function RenderedMarkdown({ text }: { text: string }) {
-  const lines = formatStudentOutput(text)
+  const lines = formatVisibleMessage(text)
     .replace(/\r/g, '\n')
     .split('\n')
-    .map((line) => line.trim())
+    .map((line) => looksLikeCodeOutput(text) ? line.trimEnd() : line.trim())
     .filter((line) => Boolean(line) && !/^\|?\s*-{3,}/.test(line));
 
   if (lines.length === 0) {
@@ -152,4 +152,19 @@ function renderInlineText(text: string, colorStyle = styles.aiMessageText) {
 
 function cleanMarkdownText(text: string) {
   return cleanStudentReadableText(text);
+}
+
+function formatVisibleMessage(text: string) {
+  if (looksLikeCodeOutput(text)) {
+    return cleanStudentReadableText(text);
+  }
+
+  return formatStudentOutput(text);
+}
+
+function looksLikeCodeOutput(text: string) {
+  return (
+    /\b(public|private|protected|class|function|const|let|var|return|import)\b/.test(text) ||
+    /[{};]\s*$/.test(text)
+  );
 }

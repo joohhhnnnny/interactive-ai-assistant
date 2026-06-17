@@ -11,6 +11,7 @@ type WebDatabaseState = {
   embeddings: StoredChunkEmbedding[];
   chatSessions: StoredChatSession[];
   chatMessages: StoredChatMessageRow[];
+  aiPerformanceMetrics: StoredAiPerformanceMetric[];
   generatedQuizzes: StoredGeneratedItem[];
   generatedFlashcards: StoredGeneratedItem[];
   nextSourceId: number;
@@ -19,6 +20,7 @@ type WebDatabaseState = {
   nextChunkId: number;
   nextChatSessionId: number;
   nextChatMessageId: number;
+  nextAiPerformanceMetricId: number;
   nextGeneratedQuizId: number;
   nextGeneratedFlashcardId: number;
   profile: StudentProfile | null;
@@ -106,6 +108,40 @@ type StoredGeneratedItem = {
   createdAt: string;
 };
 
+type StoredAiPerformanceMetric = {
+  id: number;
+  bookId: number;
+  answerMode: AiAnswerMode;
+  confidence: AiAnswerConfidence | null;
+  retrievalMs: number | null;
+  generationMs: number | null;
+  totalMs: number | null;
+  sourceCount: number;
+  topScore: number | null;
+  fallbackReason: string | null;
+  outputLength: number;
+  showedSources: boolean;
+  createdAt: string;
+};
+
+export type AiAnswerMode = 'general' | 'grounded' | 'summary' | 'study_tool' | 'status';
+
+export type AiAnswerConfidence = 'none' | 'low' | 'medium' | 'high';
+
+export type AiPerformanceMetric = {
+  bookId: string;
+  answerMode: AiAnswerMode;
+  confidence?: AiAnswerConfidence;
+  retrievalMs?: number;
+  generationMs?: number;
+  totalMs?: number;
+  sourceCount?: number;
+  topScore?: number | null;
+  fallbackReason?: string | null;
+  outputLength?: number;
+  showedSources?: boolean;
+};
+
 export type Source = {
   id: string;
   bookId: string;
@@ -169,6 +205,7 @@ function createInitialState(): WebDatabaseState {
     embeddings: [],
     chatSessions: [],
     chatMessages: [],
+    aiPerformanceMetrics: [],
     generatedQuizzes: [],
     generatedFlashcards: [],
     nextSourceId: 1,
@@ -177,6 +214,7 @@ function createInitialState(): WebDatabaseState {
     nextChunkId: 1,
     nextChatSessionId: 1,
     nextChatMessageId: 1,
+    nextAiPerformanceMetricId: 1,
     nextGeneratedQuizId: 1,
     nextGeneratedFlashcardId: 1,
     profile: null,
@@ -953,6 +991,37 @@ export async function appendChatMessage(
   await pruneChatMessagesByBook(bookId);
 
   return mapChatMessage(storedMessage);
+}
+
+export async function saveAiPerformanceMetric(metric: AiPerformanceMetric) {
+  await initializeDatabase();
+
+  const numericId = Number(metric.bookId);
+
+  if (!Number.isFinite(numericId)) {
+    return;
+  }
+
+  const state = readState();
+  const storedMetric: StoredAiPerformanceMetric = {
+    id: state.nextAiPerformanceMetricId,
+    bookId: numericId,
+    answerMode: metric.answerMode,
+    confidence: metric.confidence ?? null,
+    retrievalMs: metric.retrievalMs ?? null,
+    generationMs: metric.generationMs ?? null,
+    totalMs: metric.totalMs ?? null,
+    sourceCount: metric.sourceCount ?? 0,
+    topScore: metric.topScore ?? null,
+    fallbackReason: metric.fallbackReason ?? null,
+    outputLength: metric.outputLength ?? 0,
+    showedSources: Boolean(metric.showedSources),
+    createdAt: new Date().toISOString(),
+  };
+
+  state.aiPerformanceMetrics.push(storedMetric);
+  state.nextAiPerformanceMetricId += 1;
+  writeState(state);
 }
 
 export async function pruneChatMessagesByBook(bookId: string, maxStudentTurns = 20) {

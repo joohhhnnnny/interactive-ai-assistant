@@ -9,14 +9,17 @@ import {
   getAppSetting,
   hasReadySources,
   hasReadyStudyChunks,
+  saveAiPerformanceMetric,
   saveGeneratedFlashcards,
   saveGeneratedQuiz,
 } from '../data/database';
+import type { AiAnswerConfidence, AiAnswerMode } from '../data/database';
 import {
+  buildGeneralMessages,
   buildGroundedMessages,
   formatSourceLabel,
   retrieveBookOverviewChunks,
-  retrieveRelevantChunks,
+  retrieveRelevantChunksWithMetadata,
   retrieveStudyToolChunks,
 } from './retrieval';
 import {
@@ -30,6 +33,7 @@ import {
 } from './offlineModelResources.native';
 import {
   cleanLessonText,
+  formatGeneralOutput,
   formatStudentOutput,
   splitReadableSentences,
 } from './textCleanup';
@@ -37,9 +41,23 @@ import {
 type OfflineAiResponse = {
   text: string;
   sources: string[];
+  answerMode: AiAnswerMode;
+  confidence?: AiAnswerConfidence;
+  metrics?: OfflineAiMetrics;
 };
 
 export type StudyToolMode = 'mcq' | 'fill_blank' | 'essay';
+
+type OfflineAiMetrics = {
+  retrievalMs?: number;
+  generationMs?: number;
+  totalMs?: number;
+  sourceCount?: number;
+  topScore?: number | null;
+  fallbackReason?: string | null;
+};
+
+type AnswerIntent = 'general' | 'grounded' | 'summary';
 
 const heavyAnswerTimeoutMs = 30000;
 const quizItemCount = 10;
@@ -92,53 +110,175 @@ export function useOfflineAi(bookId: string, bookTitle: string) {
 
   const answerQuestion = useCallback(
     async (question: string): Promise<OfflineAiResponse> => {
-      if (!isAvailable) {
-        return {
-          text: 'The study helper is not available on this device yet.',
-          sources: [],
+      const startedAt = Date.now();
+      const makeResponse = async ({
+        text,
+        sources = [],
+        answerMode,
+        confidence = 'none',
+        retrievalMs,
+        generationMs,
+        topScore = null,
+        fallbackReason = null,
+      }: {
+        text: string;
+        sources?: string[];
+        answerMode: AiAnswerMode;
+        confidence?: AiAnswerConfidence;
+        retrievalMs?: number;
+        generationMs?: number;
+        topScore?: number | null;
+        fallbackReason?: string | null;
+      }): Promise<OfflineAiResponse> => {
+        const metrics: OfflineAiMetrics = {
+          retrievalMs,
+          generationMs,
+          totalMs: Date.now() - startedAt,
+          sourceCount: sources.length,
+          topScore,
+          fallbackReason,
         };
-      }
 
-      if (!hasCheckedDownload) {
-        return {
-          text: 'Checking your saved study helper...',
-          sources: [],
-        };
-      }
+        try {
+          const showedSources = answerMode !== 'status' && sources.length > 0;
 
-      if (!shouldLoadEmbeddings) {
-        return {
-          text: 'Please prepare the study helper from My Books first.',
-          sources: [],
-        };
-      }
-
-      const hasSources = await hasReadySources(bookId);
-
-      if (!hasSources) {
-        return {
-          text: 'I need a ready source before I can answer from this book.',
-          sources: [],
-        };
-      }
-
-      if (isSummaryRequest(question)) {
-        const chunks = await retrieveBookOverviewChunks(bookId, 12);
-
-        if (chunks.length === 0) {
-          return {
-            text: 'I could not find readable PDF text to summarize yet.',
-            sources: [],
-          };
+          await saveAiPerformanceMetric({
+            bookId,
+            answerMode,
+            confidence,
+            retrievalMs,
+            generationMs,
+            totalMs: metrics.totalMs,
+            sourceCount: sources.length,
+            topScore,
+            fallbackReason,
+            outputLength: text.length,
+            showedSources,
+          });
+        } catch {
+          // The answer should still work if local metrics cannot be saved.
         }
 
         return {
-          text: buildPdfSummary(chunks),
-          sources: chunks.slice(0, 5).map(formatSourceLabel),
+          text,
+          sources,
+          answerMode,
+          confidence,
+          metrics,
         };
+      };
+
+      if (!isAvailable) {
+        return makeResponse({
+          text: 'The study helper is not available on this device yet.',
+          answerMode: 'status',
+          fallbackReason: 'executorch_unavailable',
+        });
+      }
+
+      if (!hasCheckedDownload) {
+        return makeResponse({
+          text: 'Checking your saved study helper...',
+          answerMode: 'status',
+          fallbackReason: 'checking_download',
+        });
+      }
+
+      if (!shouldLoadEmbeddings) {
+        return makeResponse({
+          text: 'Please prepare the study helper from My Books first.',
+          answerMode: 'status',
+          fallbackReason: 'model_not_prepared',
+        });
+      }
+
+      const hasSources = await hasReadySources(bookId);
+      const intent = getAnswerIntent(question, hasSources);
+
+      if (!hasSources && intent !== 'general') {
+        return makeResponse({
+          text: 'I need a ready source before I can answer from this book.',
+          answerMode: 'status',
+          fallbackReason: 'no_ready_sources',
+        });
+      }
+
+      if (intent === 'summary') {
+        const retrievalStartedAt = Date.now();
+        const chunks = await retrieveBookOverviewChunks(bookId, 12);
+        const retrievalMs = Date.now() - retrievalStartedAt;
+
+        if (chunks.length === 0) {
+          return makeResponse({
+            text: 'I could not find readable PDF text to summarize yet.',
+            answerMode: 'summary',
+            retrievalMs,
+            fallbackReason: 'no_summary_chunks',
+          });
+        }
+
+        const sources = chunks.slice(0, 5).map(formatSourceLabel);
+
+        return makeResponse({
+          text: buildPdfSummary(chunks),
+          sources,
+          answerMode: 'summary',
+          confidence: 'medium',
+          retrievalMs,
+          topScore: chunks[0]?.score ?? null,
+        });
+      }
+
+      if (intent === 'general') {
+        if (llm.error) {
+          return makeResponse({
+            text: 'The larger study helper had trouble opening on this device. Please close other apps and try again, or switch back to the lighter study helper.',
+            answerMode: 'status',
+            fallbackReason: 'llm_error',
+          });
+        }
+
+        if (!shouldLoadLlm) {
+          setShouldLoadLlm(true);
+          return makeResponse({
+            text: 'The larger study helper is opening now, so please ask again in a moment.',
+            answerMode: 'status',
+            fallbackReason: 'llm_lazy_loading',
+          });
+        }
+
+        if (!llm.isReady) {
+          const progress = Math.round(llm.downloadProgress * 100);
+          return makeResponse({
+            text: `The study helper is still getting ready${progress > 0 ? ` (${progress}%)` : ''}.`,
+            answerMode: 'status',
+            fallbackReason: 'llm_not_ready',
+          });
+        }
+
+        llm.configure({ generationConfig });
+
+        const generationStartedAt = Date.now();
+        const answer = await withTimeout(
+          llm.generate(buildGeneralMessages(question) as Message[]),
+          heavyAnswerTimeoutMs,
+          '',
+          llm.interrupt
+        );
+        const generationMs = Date.now() - generationStartedAt;
+        const cleanAnswer = formatGeneralOutput(answer);
+
+        return makeResponse({
+          text: cleanAnswer || 'I could not prepare a clear answer yet. Please try asking in a simpler way.',
+          answerMode: 'general',
+          confidence: cleanAnswer ? 'medium' : 'low',
+          generationMs,
+          fallbackReason: cleanAnswer ? null : 'empty_general_answer',
+        });
       }
 
       let queryEmbedding: Float32Array | null = null;
+      const retrievalStartedAt = Date.now();
 
       if (embeddings.isReady) {
         queryEmbedding = await embeddings.forward(
@@ -146,60 +286,93 @@ export function useOfflineAi(bookId: string, bookTitle: string) {
         );
       }
 
-      const chunks = await retrieveRelevantChunks(
+      const retrievalResult = await retrieveRelevantChunksWithMetadata(
         bookId,
         question,
         queryEmbedding,
         embeddingModelName
       );
+      const retrievalMs = Date.now() - retrievalStartedAt;
+      const chunks = retrievalResult.chunks;
 
       if (chunks.length === 0) {
-        return {
-          text: 'I could not find that in your uploaded PDFs. Please ask about the lesson sources in this book.',
-          sources: [],
-        };
+        return makeResponse({
+          text: 'The lesson does not have enough information about that yet.',
+          answerMode: 'grounded',
+          confidence: 'none',
+          retrievalMs,
+          fallbackReason: `no_relevant_${retrievalResult.fallbackKind}_chunks`,
+        });
       }
 
+      const sources = chunks.map(formatSourceLabel);
+
       if (llm.error) {
-        return {
+        return makeResponse({
           text: 'The larger study helper had trouble opening on this device. Please close other apps and try again, or switch back to the lighter study helper.',
-          sources: chunks.map(formatSourceLabel),
-        };
+          sources,
+          answerMode: 'status',
+          confidence: retrievalResult.confidence,
+          retrievalMs,
+          topScore: retrievalResult.topScore,
+          fallbackReason: 'llm_error',
+        });
       }
 
       if (!shouldLoadLlm) {
         setShouldLoadLlm(true);
-        return {
+        return makeResponse({
           text: 'I found your lesson. The larger study helper is opening now, so please ask again in a moment.',
-          sources: chunks.map(formatSourceLabel),
-        };
+          sources,
+          answerMode: 'status',
+          confidence: retrievalResult.confidence,
+          retrievalMs,
+          topScore: retrievalResult.topScore,
+          fallbackReason: 'llm_lazy_loading',
+        });
       }
 
       if (!llm.isReady) {
         const progress = Math.round(llm.downloadProgress * 100);
-        return {
+        return makeResponse({
           text: `I found your lesson, but the study helper is still getting ready${progress > 0 ? ` (${progress}%)` : ''}.`,
-          sources: chunks.map(formatSourceLabel),
-        };
+          sources,
+          answerMode: 'status',
+          confidence: retrievalResult.confidence,
+          retrievalMs,
+          topScore: retrievalResult.topScore,
+          fallbackReason: 'llm_not_ready',
+        });
       }
 
       llm.configure({ generationConfig });
 
+      const generationStartedAt = Date.now();
       const answer = await withTimeout(
         llm.generate(buildGroundedMessages(question, chunks) as Message[]),
         heavyAnswerTimeoutMs,
         '',
         llm.interrupt
       );
+      const generationMs = Date.now() - generationStartedAt;
 
       const cleanAnswer = formatStudentOutput(answer);
+      const fallbackReason = cleanAnswer && !isBadGroundedAnswer(cleanAnswer)
+        ? null
+        : 'quick_grounded_fallback';
 
-      return {
+      return makeResponse({
         text: cleanAnswer && !isBadGroundedAnswer(cleanAnswer)
           ? cleanAnswer
           : buildQuickGroundedAnswer(chunks),
-        sources: chunks.map(formatSourceLabel),
-      };
+        sources,
+        answerMode: 'grounded',
+        confidence: retrievalResult.confidence,
+        retrievalMs,
+        generationMs,
+        topScore: retrievalResult.topScore,
+        fallbackReason,
+      });
     },
     [bookId, embeddings, hasCheckedDownload, llm, shouldLoadEmbeddings, shouldLoadLlm]
   );
@@ -210,27 +383,77 @@ export function useOfflineAi(bookId: string, bookTitle: string) {
       mode: StudyToolMode = 'mcq',
       requestedCount?: number
     ): Promise<OfflineAiResponse> => {
-      if (!hasCheckedDownload) {
-        return {
-          text: 'Checking your saved study helper...',
-          sources: [],
+      const startedAt = Date.now();
+      const makeStudyResponse = async ({
+        text,
+        sources = [],
+        confidence = 'none',
+        retrievalMs,
+        topScore = null,
+        fallbackReason = null,
+      }: {
+        text: string;
+        sources?: string[];
+        confidence?: AiAnswerConfidence;
+        retrievalMs?: number;
+        topScore?: number | null;
+        fallbackReason?: string | null;
+      }): Promise<OfflineAiResponse> => {
+        const metrics: OfflineAiMetrics = {
+          retrievalMs,
+          totalMs: Date.now() - startedAt,
+          sourceCount: sources.length,
+          topScore,
+          fallbackReason,
         };
+
+        try {
+          await saveAiPerformanceMetric({
+            bookId,
+            answerMode: sources.length > 0 ? 'study_tool' : 'status',
+            confidence,
+            retrievalMs,
+            totalMs: metrics.totalMs,
+            sourceCount: sources.length,
+            topScore,
+            fallbackReason,
+            outputLength: text.length,
+            showedSources: sources.length > 0,
+          });
+        } catch {
+          // The study tool remains useful even if metrics cannot be saved.
+        }
+
+        return {
+          text,
+          sources,
+          answerMode: sources.length > 0 ? 'study_tool' : 'status',
+          confidence,
+          metrics,
+        };
+      };
+
+      if (!hasCheckedDownload) {
+        return makeStudyResponse({
+          text: 'Checking your saved study helper...',
+          fallbackReason: 'checking_download',
+        });
       }
 
       if (!shouldLoadEmbeddings) {
-        return {
+        return makeStudyResponse({
           text: 'Please prepare the study helper from My Books first.',
-          sources: [],
-        };
+          fallbackReason: 'model_not_prepared',
+        });
       }
 
       const hasChunks = await hasReadyStudyChunks(bookId);
 
       if (!hasChunks) {
-        return {
+        return makeStudyResponse({
           text: 'ALAB needs a ready source before making this study tool.',
-          sources: [],
-        };
+          fallbackReason: 'no_ready_chunks',
+        });
       }
 
       const itemCount = getStudyToolItemCount(tool, requestedCount);
@@ -238,6 +461,7 @@ export function useOfflineAi(bookId: string, bookTitle: string) {
         tool === 'quiz'
           ? `${itemCount} ${mode} quiz topics from ${bookTitle}`
           : `${itemCount} key terms and concepts from ${bookTitle}`;
+      const retrievalStartedAt = Date.now();
       const queryEmbedding = embeddings.isReady
         ? await embeddings.forward(formatEmbeddingInput(query, 'query'))
         : null;
@@ -247,12 +471,14 @@ export function useOfflineAi(bookId: string, bookTitle: string) {
         embeddingModelName,
         itemCount
       );
+      const retrievalMs = Date.now() - retrievalStartedAt;
 
       if (chunks.length === 0) {
-        return {
+        return makeStudyResponse({
           text: 'ALAB needs a ready source before making this study tool.',
-          sources: [],
-        };
+          retrievalMs,
+          fallbackReason: 'no_study_tool_chunks',
+        });
       }
 
       const toolText = buildSimpleStudyToolFallback(tool, chunks, mode, itemCount);
@@ -268,10 +494,13 @@ export function useOfflineAi(bookId: string, bookTitle: string) {
         // The generated message is still useful even if study-tool history fails.
       }
 
-      return {
+      return makeStudyResponse({
         text: toolText,
         sources: chunks.map(formatSourceLabel),
-      };
+        confidence: 'medium',
+        retrievalMs,
+        topScore: chunks[0]?.score ?? null,
+      });
     },
     [bookId, bookTitle, embeddings, hasCheckedDownload, shouldLoadEmbeddings]
   );
@@ -400,6 +629,50 @@ function isSummaryRequest(question: string) {
     normalized.includes('what is this pdf about') ||
     normalized.includes('what is the pdf about')
   );
+}
+
+function getAnswerIntent(question: string, hasSources: boolean): AnswerIntent {
+  if (isSummaryRequest(question)) {
+    return 'summary';
+  }
+
+  if (isExplicitLessonRequest(question)) {
+    return 'grounded';
+  }
+
+  if (isGeneralKnowledgeRequest(question)) {
+    return 'general';
+  }
+
+  return hasSources ? 'grounded' : 'general';
+}
+
+function isExplicitLessonRequest(question: string) {
+  const normalized = question.toLowerCase();
+
+  return (
+    /\b(this|the|my|our)\s+(lesson|book|pdf|source|module|chapter|material|textbook)\b/.test(normalized) ||
+    /\bfrom\s+(the|this|my|our)?\s*(lesson|book|pdf|source|module|chapter|material|textbook)\b/.test(normalized) ||
+    /\baccording to\s+(the|this|my|our)?\s*(lesson|book|pdf|source|module|chapter|material|textbook)\b/.test(normalized) ||
+    normalized.includes('in the uploaded') ||
+    normalized.includes('in your uploaded') ||
+    normalized.includes('based on the lesson') ||
+    normalized.includes('based on my lesson')
+  );
+}
+
+function isGeneralKnowledgeRequest(question: string) {
+  const normalized = question.toLowerCase();
+
+  if (
+    /\b(java|javascript|python|html|css|sql|c\+\+|c#|code|program|function|class|algorithm)\b/.test(normalized) ||
+    /\b(write|create|make|give me|show me)\b.+\b(code|program|example|template|letter|essay|story|sentence|paragraph)\b/.test(normalized) ||
+    /\btranslate\b|\bgrammar\b|\brewrite\b|\bproofread\b/.test(normalized)
+  ) {
+    return true;
+  }
+
+  return /^[\d\s+\-*/().=]+$/.test(normalized.trim());
 }
 
 function cleanChunkText(text: string) {

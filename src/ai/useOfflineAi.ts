@@ -1,12 +1,24 @@
 type OfflineAiResponse = {
   text: string;
   sources: string[];
+  answerMode: 'general' | 'grounded' | 'summary' | 'study_tool' | 'status';
+  confidence?: 'none' | 'low' | 'medium' | 'high';
+  metrics?: {
+    retrievalMs?: number;
+    generationMs?: number;
+    totalMs?: number;
+    sourceCount?: number;
+    topScore?: number | null;
+    fallbackReason?: string | null;
+  };
 };
 
 export function useOfflineAi(_bookId?: string, _bookTitle?: string) {
   const answerQuestion = async (_question?: string): Promise<OfflineAiResponse> => ({
     text: 'The study helper is not available in this preview yet.',
     sources: [],
+    answerMode: 'status',
+    confidence: 'none',
   });
 
   const generateStudyTool = async (
@@ -16,6 +28,8 @@ export function useOfflineAi(_bookId?: string, _bookTitle?: string) {
   ): Promise<OfflineAiResponse> => ({
     text: 'Quizzes and flashcards are not available in this preview yet.',
     sources: [],
+    answerMode: 'status',
+    confidence: 'none',
   });
 
   const embedLessonText = async (): Promise<Float32Array | null> => null;
