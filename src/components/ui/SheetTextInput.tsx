@@ -1,3 +1,3 @@
-import { BottomSheetTextInput } from '@gorhom/bottom-sheet';
+import { TextInput } from 'react-native';
 
-export { BottomSheetTextInput as SheetTextInput };
+export { TextInput as SheetTextInput };

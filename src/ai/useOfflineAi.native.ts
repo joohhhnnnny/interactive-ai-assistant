@@ -309,7 +309,7 @@ export function useOfflineAi(bookId: string, bookTitle: string) {
 
       if (llm.error) {
         return makeResponse({
-          text: 'The larger study helper had trouble opening on this device. Please close other apps and try again, or switch back to the lighter study helper.',
+          text: 'The study helper had trouble opening on this device. Please close other apps and try again.',
           sources,
           answerMode: 'status',
           confidence: retrievalResult.confidence,
@@ -322,7 +322,7 @@ export function useOfflineAi(bookId: string, bookTitle: string) {
       if (!shouldLoadLlm) {
         setShouldLoadLlm(true);
         return makeResponse({
-          text: 'I found your lesson. The larger study helper is opening now, so please ask again in a moment.',
+          text: 'I found your lesson. The study helper is opening now, so please ask again in a moment.',
           sources,
           answerMode: 'status',
           confidence: retrievalResult.confidence,

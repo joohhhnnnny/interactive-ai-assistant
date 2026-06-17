@@ -12,9 +12,9 @@ import {
 import type { SourceProcessingStatus } from '../data/database';
 import { cleanStudentReadableText } from './textCleanup';
 
-const maxWordsPerChunk = 300;
-const overlapWords = 60;
-const minimumWordsPerChunk = 24;
+const maxWordsPerChunk = 100;
+const overlapWords = 25;
+const minimumWordsPerChunk = 18;
 
 type PageText = {
   pageNumber: number;

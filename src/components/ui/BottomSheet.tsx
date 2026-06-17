@@ -1,12 +1,14 @@
-import GorhomBottomSheet, {
-  BottomSheetBackdrop,
-  BottomSheetScrollView,
-} from '@gorhom/bottom-sheet';
-import { ComponentProps, ReactNode, useMemo } from 'react';
+import { ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Animated,
+  Easing,
+  Keyboard,
+  Modal,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
+  useWindowDimensions,
   View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -27,69 +29,164 @@ export function BottomSheet({
   visible,
 }: BottomSheetProps) {
   const insets = useSafeAreaInsets();
-  const sheetSnapPoints = useMemo(() => snapPoints ?? ['46%', '72%'], [snapPoints]);
+  const { height } = useWindowDimensions();
+  const [isMounted, setIsMounted] = useState(visible);
+  const backdropOpacity = useRef(new Animated.Value(0)).current;
+  const sheetTranslateY = useRef(new Animated.Value(height)).current;
+  const maxHeight = useMemo(
+    () => getSheetMaxHeight(height, snapPoints),
+    [height, snapPoints]
+  );
 
-  if (!visible) {
+  const handleClose = useCallback(() => {
+    Keyboard.dismiss();
+    onClose();
+  }, [onClose]);
+
+  useEffect(() => {
+    if (visible) {
+      setIsMounted(true);
+      Animated.parallel([
+        Animated.timing(backdropOpacity, {
+          toValue: 1,
+          duration: 150,
+          easing: Easing.out(Easing.ease),
+          useNativeDriver: true,
+        }),
+        Animated.timing(sheetTranslateY, {
+          toValue: 0,
+          duration: 180,
+          easing: Easing.out(Easing.cubic),
+          useNativeDriver: true,
+        }),
+      ]).start();
+      return;
+    }
+
+    Animated.parallel([
+      Animated.timing(backdropOpacity, {
+        toValue: 0,
+        duration: 120,
+        easing: Easing.in(Easing.ease),
+        useNativeDriver: true,
+      }),
+      Animated.timing(sheetTranslateY, {
+        toValue: height,
+        duration: 160,
+        easing: Easing.in(Easing.cubic),
+        useNativeDriver: true,
+      }),
+    ]).start(({ finished }) => {
+      if (finished) {
+        setIsMounted(false);
+      }
+    });
+  }, [backdropOpacity, height, sheetTranslateY, visible]);
+
+  if (!isMounted) {
     return null;
   }
 
   return (
-    <View style={styles.overlay} pointerEvents="box-none">
-      <GorhomBottomSheet
-        index={0}
-        snapPoints={sheetSnapPoints}
-        enablePanDownToClose
-        keyboardBehavior="interactive"
-        keyboardBlurBehavior="restore"
-        android_keyboardInputMode="adjustPan"
-        backdropComponent={(props: ComponentProps<typeof BottomSheetBackdrop>) => (
-          <BottomSheetBackdrop
-            {...props}
-            appearsOnIndex={0}
-            disappearsOnIndex={-1}
-            opacity={0.32}
-            pressBehavior="close"
+    <Modal
+      transparent
+      visible={isMounted}
+      animationType="none"
+      onRequestClose={handleClose}
+      statusBarTranslucent
+    >
+      <View style={styles.root}>
+        <Animated.View
+          pointerEvents={visible ? 'auto' : 'none'}
+          style={[styles.backdrop, { opacity: backdropOpacity }]}
+        >
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={`Close ${title}`}
+            style={styles.backdropPressTarget}
+            onPress={handleClose}
           />
-        )}
-        backgroundStyle={styles.background}
-        handleIndicatorStyle={styles.handle}
-        onClose={onClose}
-      >
-        <BottomSheetScrollView
-          keyboardShouldPersistTaps="handled"
-          contentContainerStyle={[
-            styles.content,
-            { paddingBottom: Math.max(insets.bottom, 18) + 96 },
+        </Animated.View>
+
+        <Animated.View
+          style={[
+            styles.sheet,
+            {
+              maxHeight,
+              paddingBottom: Math.max(insets.bottom, 18),
+              transform: [{ translateY: sheetTranslateY }],
+            },
           ]}
         >
+          <View style={styles.handle} />
+
           <View style={styles.header}>
             <Text style={styles.title}>{title}</Text>
 
-            <Pressable onPress={onClose} style={styles.closeButton}>
+            <Pressable onPress={handleClose} style={styles.closeButton}>
               <Text style={styles.closeText}>Close</Text>
             </Pressable>
           </View>
 
-          {children}
-        </BottomSheetScrollView>
-      </GorhomBottomSheet>
-    </View>
+          <ScrollView
+            keyboardShouldPersistTaps="handled"
+            contentContainerStyle={styles.content}
+          >
+            {children}
+          </ScrollView>
+        </Animated.View>
+      </View>
+    </Modal>
   );
 }
 
+function getSheetMaxHeight(screenHeight: number, snapPoints?: string[]) {
+  const fallbackHeight = screenHeight * 0.78;
+  const largestSnapPoint = snapPoints
+    ?.map((snapPoint) => {
+      const numericValue = Number.parseFloat(snapPoint);
+
+      if (!Number.isFinite(numericValue)) {
+        return null;
+      }
+
+      return snapPoint.trim().endsWith('%')
+        ? screenHeight * (numericValue / 100)
+        : numericValue;
+    })
+    .filter((value): value is number => value !== null)
+    .reduce((largest, value) => Math.max(largest, value), 0);
+
+  return largestSnapPoint && largestSnapPoint > 0
+    ? Math.min(largestSnapPoint, screenHeight * 0.88)
+    : fallbackHeight;
+}
+
 const styles = StyleSheet.create({
-  overlay: {
+  root: {
+    flex: 1,
+    justifyContent: 'flex-end',
+  },
+  backdrop: {
     position: 'absolute',
     top: 0,
     right: 0,
     bottom: 0,
     left: 0,
-    zIndex: 100,
-    elevation: 100,
+    backgroundColor: 'rgba(0,0,0,0.32)',
   },
-  background: {
+  backdropPressTarget: {
+    flex: 1,
+  },
+  sheet: {
+    width: '100%',
+    maxWidth: 560,
+    alignSelf: 'center',
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
+    backgroundColor: '#ffffff',
+    paddingHorizontal: 20,
+    paddingTop: 10,
     shadowColor: '#000',
     shadowOpacity: 0.16,
     shadowRadius: 24,
@@ -101,10 +198,8 @@ const styles = StyleSheet.create({
     height: 4,
     borderRadius: 999,
     backgroundColor: '#d9d9e3',
-  },
-  content: {
-    paddingHorizontal: 20,
-    paddingTop: 8,
+    alignSelf: 'center',
+    marginBottom: 18,
   },
   header: {
     flexDirection: 'row',
@@ -127,5 +222,8 @@ const styles = StyleSheet.create({
     color: '#0038a8',
     fontSize: 14,
     fontWeight: '600',
+  },
+  content: {
+    paddingBottom: 96,
   },
 });

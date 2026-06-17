@@ -8,6 +8,8 @@ type StudyHelperStatus = {
   isLoading: boolean;
   progress: number;
   error: unknown;
+  statusMessage?: string;
+  failureDetail?: string | null;
   recoveryMessage: string | null;
   deviceWarning?: string | null;
   startDownload: () => void | Promise<boolean>;
@@ -33,6 +35,15 @@ function OfflineModelDownloadCardWithHook() {
 
 function OfflineModelDownloadCardView({ helper }: { helper: StudyHelperStatus }) {
   const deviceWarning = helper.deviceWarning ?? null;
+  const isButtonDisabled = helper.isLoading || Boolean(deviceWarning);
+
+  const handleStartDownload = async () => {
+    if (isButtonDisabled) {
+      return;
+    }
+
+    await helper.startDownload();
+  };
 
   if (helper.isChecking) {
     return (
@@ -73,24 +84,50 @@ function OfflineModelDownloadCardView({ helper }: { helper: StudyHelperStatus })
           <Text style={styles.note}>{deviceWarning}</Text>
         ) : null}
         {helper.isLoading ? (
-          <Text style={styles.note}>
-            Keep this screen open while ALAB prepares the study helper.
-          </Text>
+          <View style={styles.statusBox}>
+            <Text style={styles.statusText}>
+              Processing {helper.progress}%
+            </Text>
+            <View style={styles.progressTrack}>
+              <View
+                style={[
+                  styles.progressFill,
+                  { width: `${Math.max(2, helper.progress)}%` },
+                ]}
+              />
+            </View>
+            <Text style={styles.progressText}>
+              {helper.statusMessage ?? 'Preparing study helper...'}
+            </Text>
+            <Text style={styles.statusHint}>
+              Keep this screen open. Large files can take several minutes.
+            </Text>
+          </View>
+        ) : null}
+        {helper.failureDetail ? (
+          <View style={styles.failureBox}>
+            {helper.statusMessage ? (
+              <Text style={styles.failureContext}>
+                Failed while: {helper.statusMessage}
+              </Text>
+            ) : null}
+            <Text style={styles.failureDetail}>{helper.failureDetail}</Text>
+          </View>
         ) : null}
       </View>
 
       <Pressable
-        onPress={helper.startDownload}
-        disabled={helper.isLoading || Boolean(deviceWarning)}
+        onPress={handleStartDownload}
+        disabled={isButtonDisabled}
         style={({ pressed }) => [
           styles.button,
           pressed && styles.buttonPressed,
-          (helper.isLoading || deviceWarning) && styles.disabledButton,
+          isButtonDisabled && styles.disabledButton,
         ]}
       >
         <Text style={styles.buttonText}>
           {helper.isLoading
-            ? `Preparing${helper.progress > 0 ? ` ${helper.progress}%` : '...'}`
+            ? `Processing ${helper.progress}%`
             : 'Prepare Study Helper'}
         </Text>
       </Pressable>
@@ -133,6 +170,57 @@ const styles = StyleSheet.create({
     fontSize: 13,
     lineHeight: 18,
     fontWeight: '600',
+  },
+  statusBox: {
+    gap: 8,
+    borderRadius: 12,
+    backgroundColor: '#f3f6ff',
+    padding: 12,
+    marginTop: 6,
+  },
+  statusText: {
+    color: '#002576',
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: '700',
+  },
+  progressTrack: {
+    height: 6,
+    borderRadius: 999,
+    backgroundColor: '#d8e1ff',
+    overflow: 'hidden',
+  },
+  progressFill: {
+    height: '100%',
+    borderRadius: 999,
+    backgroundColor: '#0038a8',
+  },
+  progressText: {
+    color: '#444653',
+    fontSize: 12,
+    lineHeight: 16,
+    fontWeight: '600',
+  },
+  statusHint: {
+    color: '#747685',
+    fontSize: 12,
+    lineHeight: 16,
+    fontWeight: '500',
+  },
+  failureDetail: {
+    color: '#93000A',
+    fontSize: 12,
+    lineHeight: 16,
+    fontWeight: '600',
+  },
+  failureBox: {
+    gap: 4,
+  },
+  failureContext: {
+    color: '#6a3f00',
+    fontSize: 12,
+    lineHeight: 16,
+    fontWeight: '700',
   },
   button: {
     minHeight: 48,

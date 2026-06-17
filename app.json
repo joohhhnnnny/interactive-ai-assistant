@@ -20,7 +20,11 @@
         "monochromeImage": "./assets/images/logo/alab-logo.png"
       },
       "predictiveBackGestureEnabled": false,
-      "package": "com.interactiveaiassistant"
+      "package": "com.interactiveaiassistant",
+      "permissions": [
+        "android.permission.RECORD_AUDIO",
+        "android.permission.MODIFY_AUDIO_SETTINGS"
+      ]
     },
     "web": {
       "output": "static",
@@ -69,6 +73,21 @@
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
+    },
+    "extra": {
+      "router": {},
+      "expo-status-bar": {
+        "style": "dark",
+        "hidden": false
+      },
+      "expo-navigation-bar": {
+        "enforceContrast": false,
+        "style": "dark",
+        "hidden": false
+      },
+      "eas": {
+        "projectId": "0dc4653a-c378-4aa5-a409-8ab2d33792c0"
+      }
     }
   }
 }

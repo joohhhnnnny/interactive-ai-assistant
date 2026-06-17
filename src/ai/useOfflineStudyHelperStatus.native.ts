@@ -4,19 +4,17 @@ import {
   deactivateKeepAwake,
 } from 'expo-keep-awake';
 import {
+  RnExecutorchErrorCode,
   isAvailable,
-  useLLM,
-  useTextEmbeddings,
 } from 'react-native-executorch';
 import { getAppSetting, saveAppSetting } from '../data/database';
 import {
   deleteOfflineModelResources,
+  downloadOfflineModelResources,
   getOfflineModelDeviceWarning,
   modelDownloadedKey,
   modelDownloadInProgressKey,
   modelProfileKey,
-  offlineEmbeddingModel,
-  offlineLlmModel,
   offlineModelProfile,
 } from './offlineModelResources.native';
 
@@ -24,19 +22,15 @@ const keepAwakeTag = 'alab-offline-model-download';
 
 export function useOfflineStudyHelperStatus() {
   const [isChecking, setIsChecking] = useState(true);
-  const [shouldLoad, setShouldLoad] = useState(false);
+  const [isReady, setIsReady] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [error, setError] = useState<unknown>(null);
+  const [statusMessage, setStatusMessage] = useState('Preparing study helper...');
+  const [failureDetail, setFailureDetail] = useState<string | null>(null);
   const [recoveryMessage, setRecoveryMessage] = useState<string | null>(null);
   const [deviceWarning] = useState(() => getOfflineModelDeviceWarning());
-  const isCleaningAfterErrorRef = useRef(false);
-
-  const llm = useLLM({
-    model: offlineLlmModel,
-    preventLoad: !shouldLoad,
-  });
-  const embeddings = useTextEmbeddings({
-    model: offlineEmbeddingModel,
-    preventLoad: !shouldLoad,
-  });
+  const activeAttemptRef = useRef(0);
 
   useEffect(() => {
     let isActive = true;
@@ -52,7 +46,7 @@ export function useOfflineStudyHelperStatus() {
         }
 
         if (downloadedValue === 'true' && profileValue === offlineModelProfile) {
-          setShouldLoad(true);
+          setIsReady(true);
           return;
         }
 
@@ -63,7 +57,7 @@ export function useOfflineStudyHelperStatus() {
 
           if (isActive) {
             setRecoveryMessage(
-              'ALAB reset the old study helper for the larger model. Please prepare it again.'
+              'ALAB reset the old study helper. Please prepare it again.'
             );
           }
 
@@ -100,23 +94,6 @@ export function useOfflineStudyHelperStatus() {
   }, []);
 
   useEffect(() => {
-    if (!shouldLoad || !llm.isReady || !embeddings.isReady) {
-      return;
-    }
-
-    saveAppSetting(modelDownloadedKey, 'true');
-    saveAppSetting(modelDownloadInProgressKey, 'false');
-    saveAppSetting(modelProfileKey, offlineModelProfile);
-  }, [embeddings.isReady, llm.isReady, shouldLoad]);
-
-  const progress = Math.round(
-    ((llm.downloadProgress + embeddings.downloadProgress) / 2) * 100
-  );
-  const isReady = llm.isReady && embeddings.isReady;
-  const isLoading = shouldLoad && !isReady;
-  const error = llm.error ?? embeddings.error;
-
-  useEffect(() => {
     if (!isLoading) {
       deactivateKeepAwake(keepAwakeTag).catch(() => {});
       return;
@@ -129,44 +106,68 @@ export function useOfflineStudyHelperStatus() {
     };
   }, [isLoading]);
 
-  useEffect(() => {
-    if (!error || isCleaningAfterErrorRef.current) {
-      return;
-    }
-
-    isCleaningAfterErrorRef.current = true;
-
-    deleteOfflineModelResources()
-      .then(() => {
-        setShouldLoad(false);
-        setRecoveryMessage(
-          'The study helper download did not finish. ALAB cleared it so you can try again.'
-        );
-      })
-      .catch(() => {
-        setShouldLoad(false);
-        setRecoveryMessage(
-          'The study helper download did not finish. Please try preparing it again.'
-        );
-      })
-      .finally(() => {
-        saveAppSetting(modelDownloadedKey, 'false');
-        saveAppSetting(modelDownloadInProgressKey, 'false');
-      });
-  }, [error]);
-
   const startDownload = useCallback(async () => {
     if (deviceWarning) {
       setRecoveryMessage(deviceWarning);
       return false;
     }
 
+    const attempt = activeAttemptRef.current + 1;
+    activeAttemptRef.current = attempt;
+
+    setError(null);
+    setIsReady(false);
+    setIsLoading(true);
+    setProgress(0);
+    setStatusMessage('Starting study helper download...');
+    setFailureDetail(null);
     setRecoveryMessage(null);
-    isCleaningAfterErrorRef.current = false;
-    await saveAppSetting(modelDownloadedKey, 'false');
-    await saveAppSetting(modelDownloadInProgressKey, 'true');
-    setShouldLoad(true);
-    return true;
+
+    try {
+      await saveAppSetting(modelDownloadedKey, 'false');
+      await saveAppSetting(modelDownloadInProgressKey, 'true');
+      await downloadOfflineModelResources((status) => {
+        if (activeAttemptRef.current === attempt) {
+          setProgress(Math.round(status.overallProgress * 100));
+          setStatusMessage(
+            `Downloading ${status.label} (${status.resourceIndex}/${status.totalResources})`
+          );
+        }
+      });
+
+      if (activeAttemptRef.current !== attempt) {
+        return false;
+      }
+
+      await saveAppSetting(modelDownloadedKey, 'true');
+      await saveAppSetting(modelDownloadInProgressKey, 'false');
+      await saveAppSetting(modelProfileKey, offlineModelProfile);
+
+      setProgress(100);
+      setIsReady(true);
+      setStatusMessage('Study helper is ready.');
+      return true;
+    } catch (nextError) {
+      if (activeAttemptRef.current !== attempt) {
+        return false;
+      }
+
+      setError(nextError);
+      setFailureDetail(getFailureDetail(nextError));
+      console.warn('[ALAB] Study helper download failed', {
+        code: getErrorCode(nextError),
+        message: getErrorMessage(nextError),
+      });
+
+      await saveAppSetting(modelDownloadedKey, 'false');
+      await saveAppSetting(modelDownloadInProgressKey, 'false');
+      setRecoveryMessage(getRecoveryMessage(nextError));
+      return false;
+    } finally {
+      if (activeAttemptRef.current === attempt) {
+        setIsLoading(false);
+      }
+    }
   }, [deviceWarning]);
 
   return {
@@ -176,8 +177,52 @@ export function useOfflineStudyHelperStatus() {
     isLoading,
     progress,
     error,
+    statusMessage,
+    failureDetail,
     recoveryMessage,
     deviceWarning,
     startDownload,
   };
+}
+
+function isDownloadError(error: unknown) {
+  const code = getErrorCode(error);
+
+  return (
+    code === RnExecutorchErrorCode.DownloadInterrupted ||
+    code === RnExecutorchErrorCode.ResourceFetcherDownloadFailed
+  );
+}
+
+function getErrorCode(error: unknown) {
+  if (typeof error !== 'object' || error === null || !('code' in error)) {
+    return null;
+  }
+
+  const code = (error as { code?: unknown }).code;
+
+  return typeof code === 'number' ? code : null;
+}
+
+function getErrorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function getRecoveryMessage(error: unknown) {
+  if (isDownloadError(error)) {
+    return 'The study helper download did not finish. Check the detail below, then try again.';
+  }
+
+  return 'The study helper could not be prepared on this device. Please close other apps and try again.';
+}
+
+function getFailureDetail(error: unknown) {
+  const code = getErrorCode(error);
+  const message = getErrorMessage(error);
+
+  if (code) {
+    return `Error ${code}: ${message}`;
+  }
+
+  return message;
 }

@@ -35,6 +35,9 @@ yarn-error.*
 .DS_Store
 *.pem
 
+# JetBrains / Android Studio
+.idea/
+
 # local env files
 .env
 .env.*

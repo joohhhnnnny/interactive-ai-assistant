@@ -38,7 +38,7 @@ export function useOfflineAi() {
     answerQuestion,
     generateStudyTool,
     embedLessonText,
-    embeddingModelName: 'multilingual-e5-small',
+    embeddingModelName: 'distiluse-base-multilingual-cased-v2-8da4w-chunk100-noprefix-v2',
     isAvailable: false,
     hasCheckedDownload: true,
     shouldLoadModel: false,

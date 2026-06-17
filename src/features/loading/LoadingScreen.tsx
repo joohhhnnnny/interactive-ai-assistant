@@ -77,6 +77,7 @@ export function LoadingScreen({ onComplete }: LoadingScreenProps) {
 
           <Text style={styles.appName}>ALAB</Text>
           <Text style={styles.tagline}>Your Study Companion</Text>
+          <Text style={styles.version}>v2026-06-17-2</Text>
         </View>
 
         <View style={styles.progressArea}>
@@ -182,6 +183,15 @@ const styles = StyleSheet.create({
     fontSize: 14,
     lineHeight: 20,
     fontWeight: '400',
+    textAlign: 'center',
+  },
+  version: {
+    marginTop: 6,
+    color: '#747685',
+    fontSize: 12,
+    lineHeight: 16,
+    fontWeight: '600',
+    letterSpacing: 0.3,
     textAlign: 'center',
   },
   progressArea: {
