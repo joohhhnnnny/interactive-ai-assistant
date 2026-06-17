@@ -67,7 +67,11 @@ export function parseQuizQuestions(text: string): QuizQuestion[] {
       question.options.length === 0 || Boolean(getCorrectOptionText(question))
     );
 
-  return questions;
+  if (questions.length > 0) {
+    return questions;
+  }
+
+  return buildFallbackMcqQuestions(text);
 }
 
 export function parseFlashcards(text: string): Flashcard[] {
@@ -188,6 +192,118 @@ function normalizeQuizOptions(options: string[]) {
 function cleanMarkdownText(text: string) {
   return cleanStudentReadableText(text);
 }
+
+function buildFallbackMcqQuestions(text: string): QuizQuestion[] {
+  if (isStatusLikeQuizText(text)) {
+    return [];
+  }
+
+  const sentences = uniqueByNormalizedText(
+    cleanMarkdownText(text)
+      .replace(/\b(Page|Source)\s+\d+\b/gi, ' ')
+      .split(/(?<=[.!?])\s+|\n+/)
+      .map((sentence) => sentence.trim())
+      .filter(isUsefulFallbackSentence)
+  ).slice(0, 10);
+
+  if (sentences.length === 0) {
+    return [];
+  }
+
+  return sentences.map((sentence, index) => {
+    const correct = sentence.replace(/[.!?]+$/, '');
+    const options = rotateItems(
+      uniqueByNormalizedText([
+        correct,
+        ...sentences
+          .filter((item) => normalizeQuizOptionKey(item) !== normalizeQuizOptionKey(sentence))
+          .map((item) => item.replace(/[.!?]+$/, '')),
+        ...fallbackStatementOptions,
+      ]).slice(0, 4),
+      index
+    );
+    const correctIndex = options.findIndex(
+      (option) => normalizeQuizOptionKey(option) === normalizeQuizOptionKey(correct)
+    );
+    const answerLetter = String.fromCharCode(65 + Math.max(0, correctIndex));
+
+    return {
+      question: 'Which statement is true based on the lesson?',
+      options,
+      answer: `${answerLetter}. ${options[Math.max(0, correctIndex)] ?? correct}`,
+      explanation: correct,
+    };
+  }).filter((question) => (
+    question.options.length === 4 &&
+    Boolean(getCorrectOptionText(question))
+  ));
+}
+
+function isStatusLikeQuizText(text: string) {
+  const normalized = text.toLowerCase();
+
+  return (
+    normalized.includes('could not make quiz') ||
+    normalized.includes('needs clearer lesson') ||
+    normalized.includes('not clean enough') ||
+    normalized.includes('tried to make a quiz') ||
+    normalized.includes('still preparing') ||
+    normalized.includes('finishes preparing') ||
+    normalized.includes('please wait') ||
+    normalized.includes('not available') ||
+    normalized.includes('prepare the study helper')
+  );
+}
+
+function isUsefulFallbackSentence(sentence: string) {
+  const words = sentence.split(/\s+/).filter(Boolean);
+
+  return (
+    sentence.length >= 28 &&
+    sentence.length <= 180 &&
+    words.length >= 5 &&
+    !/^question\b/i.test(sentence) &&
+    !/^[A-D][.)]\s+/i.test(sentence) &&
+    !/^correct answer\b/i.test(sentence) &&
+    !/^explanation\b/i.test(sentence)
+  );
+}
+
+function uniqueByNormalizedText(items: string[]) {
+  const seen = new Set<string>();
+  const unique: string[] = [];
+
+  for (const item of items) {
+    const cleanItem = cleanMarkdownText(item).replace(/\s+/g, ' ').trim();
+    const key = normalizeQuizOptionKey(cleanItem);
+
+    if (!key || seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    unique.push(cleanItem);
+  }
+
+  return unique;
+}
+
+function rotateItems<T>(items: T[], offset: number) {
+  if (items.length === 0) {
+    return items;
+  }
+
+  const start = offset % items.length;
+  return [...items.slice(start), ...items.slice(0, start)];
+}
+
+const fallbackStatementOptions = [
+  'The lesson describes a key idea students should remember.',
+  'The lesson explains a useful concept for review.',
+  'The lesson gives information that can be used for studying.',
+  'The lesson includes facts that can be checked during practice.',
+  'The lesson supports this as an important study point.',
+];
 
 function mergeQuizLines(lines: string[]) {
   const mergedLines: string[] = [];

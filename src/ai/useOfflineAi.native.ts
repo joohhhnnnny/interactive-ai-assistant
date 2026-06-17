@@ -253,7 +253,7 @@ export function useOfflineAi(bookId: string, bookTitle: string) {
       if (intent === 'general') {
         if (!hasAnswerHelperPrepared) {
           return makeResponse({
-            text: 'Please finish preparing the answer helper from My Books first.',
+            text: 'Please finish preparing the study helper from My Books first.',
             answerMode: 'status',
             fallbackReason: 'answer_helper_not_prepared',
           });
@@ -350,39 +350,38 @@ export function useOfflineAi(bookId: string, bookTitle: string) {
 
       if (llm.error) {
         return makeResponse({
-          text: 'The study helper had trouble opening on this device. Please close other apps and try again.',
+          text: buildQuickGroundedAnswer(chunks),
           sources,
-          answerMode: 'status',
+          answerMode: 'grounded',
           confidence: retrievalResult.confidence,
           retrievalMs,
           topScore: retrievalResult.topScore,
-          fallbackReason: 'llm_error',
+          fallbackReason: 'quick_grounded_llm_error',
         });
       }
 
       if (!shouldLoadLlm) {
         setShouldLoadLlm(true);
         return makeResponse({
-          text: 'I found your lesson. The study helper is opening now, so please ask again in a moment.',
+          text: buildQuickGroundedAnswer(chunks),
           sources,
-          answerMode: 'status',
+          answerMode: 'grounded',
           confidence: retrievalResult.confidence,
           retrievalMs,
           topScore: retrievalResult.topScore,
-          fallbackReason: 'llm_lazy_loading',
+          fallbackReason: 'quick_grounded_llm_lazy_loading',
         });
       }
 
       if (!llm.isReady) {
-        const progress = Math.round(llm.downloadProgress * 100);
         return makeResponse({
-          text: `I found your lesson, but the study helper is still getting ready${progress > 0 ? ` (${progress}%)` : ''}.`,
+          text: buildQuickGroundedAnswer(chunks),
           sources,
-          answerMode: 'status',
+          answerMode: 'grounded',
           confidence: retrievalResult.confidence,
           retrievalMs,
           topScore: retrievalResult.topScore,
-          fallbackReason: 'llm_not_ready',
+          fallbackReason: 'quick_grounded_llm_not_ready',
         });
       }
 
@@ -489,13 +488,6 @@ export function useOfflineAi(bookId: string, bookTitle: string) {
         });
       }
 
-      if (!shouldLoadEmbeddings) {
-        return makeStudyResponse({
-          text: 'Please prepare the study helper from My Books first.',
-          fallbackReason: 'model_not_prepared',
-        });
-      }
-
       const hasChunks = await hasReadyStudyChunks(bookId);
 
       if (!hasChunks) {
@@ -597,20 +589,62 @@ export function useOfflineAi(bookId: string, bookTitle: string) {
 
 function hasValidMcqQuiz(text: string) {
   return text
-    .split(/(?=Question\s*:)/i)
+    .split(/(?=Question\s*\d*\s*[:.)-])/i)
     .map((block) => block.trim())
-    .filter((block) => /^question\s*:/i.test(block))
-    .some((block) => {
-      const optionMatches = block.match(/(?:^|\n)[A-D][.)](?:\s+|\n).+/g) ?? [];
-      const answerMatch = block.match(/(?:^|\n)Correct\s*answer\s*:\s*([A-D])[.)]?(?:\s+|\n)?(.+)?/i);
+    .filter((block) => /^question\s*\d*\s*[:.)-]/i.test(block))
+    .some(hasValidMcqBlock);
+}
 
-      if (optionMatches.length < 4 || !answerMatch) {
-        return false;
-      }
+function hasValidMcqBlock(block: string) {
+  const lines = block
+    .replace(/\r/g, '\n')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const options = new Map<string, string>();
 
-      const answerIndex = answerMatch[1].toUpperCase().charCodeAt(0) - 65;
-      return Boolean(optionMatches[answerIndex]);
-    });
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    const optionMatch = line.match(/^([A-D])[.)]\s*(.*)$/i);
+
+    if (!optionMatch) {
+      continue;
+    }
+
+    const letter = optionMatch[1].toUpperCase();
+    const inlineText = optionMatch[2].trim();
+    const optionText = inlineText || lines[index + 1]?.trim() || '';
+
+    if (optionText) {
+      options.set(letter, optionText);
+    }
+  }
+
+  const answerMatch = block.match(
+    /(?:^|\n)Correct\s*answer\s*:\s*([A-D])[.)]?(?:\s+|\n)?([^\n]*)/i
+  );
+
+  if (options.size < 4 || !answerMatch) {
+    return false;
+  }
+
+  const answerLetter = answerMatch[1].toUpperCase();
+  const correctOption = options.get(answerLetter);
+  const answerText = answerMatch[2]?.trim() ?? '';
+
+  if (!correctOption) {
+    return false;
+  }
+
+  return (
+    !answerText ||
+    normalizeAnswerText(answerText) === normalizeAnswerText(correctOption) ||
+    normalizeAnswerText(answerText).includes(normalizeAnswerText(correctOption))
+  );
+}
+
+function normalizeAnswerText(value: string) {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 }
 
 function isBadGroundedAnswer(answer: string) {
@@ -846,7 +880,13 @@ function buildSimpleStudyToolFallback(
     ? sentences
     : chunks.map((chunk) => cleanChunkText(chunk.text)).filter(Boolean);
   const targetCount = getStudyToolItemCount(tool, itemCount);
-  const studyFacts = facts.length > 0 ? facts : buildFactsFromSnippets(baseSnippets);
+  const snippetFacts = buildFactsFromSnippets(baseSnippets);
+  const emergencyFacts = buildEmergencyFactsFromChunks(chunks);
+  const studyFacts = uniqueFacts([
+    ...facts,
+    ...snippetFacts,
+    ...emergencyFacts,
+  ]);
   const selectedFacts = tool === 'quiz'
     ? buildQuizFacts(studyFacts, baseSnippets, targetCount)
     : repeatToCount(studyFacts, targetCount);
@@ -922,18 +962,56 @@ function buildFactsFromSnippets(snippets: string[]): LessonFact[] {
     }));
 }
 
+function buildEmergencyFactsFromChunks(chunks: { text: string }[]): LessonFact[] {
+  return uniqueTexts(
+    chunks
+      .map((chunk) => cleanChunkText(chunk.text))
+      .flatMap((text) => text.split(/(?<=[.!?])\s+|\n+/))
+      .map((text) => shortText(text, 160))
+      .filter(isUsefulEmergencyFactText)
+  )
+    .slice(0, maxQuizItemCount)
+    .map((snippet) => ({
+      term: snippet,
+      detail: 'This statement is true based on the lesson.',
+      sourceText: snippet,
+      kind: 'statement' as const,
+    }));
+}
+
+function isUsefulEmergencyFactText(text: string) {
+  const cleanText = cleanLessonText(text);
+  const words = cleanText.split(/\s+/).filter(Boolean);
+
+  return (
+    cleanText.length >= 28 &&
+    cleanText.length <= 180 &&
+    words.length >= 5 &&
+    !isNoisyLessonText(cleanText)
+  );
+}
+
 function buildQuizFacts(
   facts: LessonFact[],
   snippets: string[],
   targetCount: number
 ) {
-  const selectedFacts = facts.slice(0, targetCount);
+  const selectedFacts = uniqueFacts(facts).slice(0, targetCount);
 
-  if (selectedFacts.length > 0) {
+  if (selectedFacts.length >= targetCount) {
     return selectedFacts;
   }
 
-  return buildFactsFromSnippets(snippets).slice(0, targetCount);
+  const extraFacts = uniqueFacts([
+    ...selectedFacts,
+    ...buildFactsFromSnippets(snippets),
+  ]).slice(0, targetCount);
+
+  if (extraFacts.length >= targetCount) {
+    return extraFacts;
+  }
+
+  return repeatToCount(extraFacts, targetCount);
 }
 
 function parseLessonFact(sentence: string): LessonFact | null {

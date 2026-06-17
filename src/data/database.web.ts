@@ -837,8 +837,7 @@ export async function hasReadySources(bookId: string): Promise<boolean> {
 
   return state.chunks.some((chunk) => {
     const job = state.processingJobs.find((item) => item.sourceId === chunk.sourceId);
-    const hasEmbedding = state.embeddings.some((item) => item.chunkId === chunk.id);
-    return chunk.bookId === numericId && job?.status === 'ready' && hasEmbedding;
+    return chunk.bookId === numericId && isStudyUsableProcessingJob(job);
   });
 }
 
@@ -854,14 +853,26 @@ export async function hasReadyStudyChunks(bookId: string): Promise<boolean> {
   const state = readState();
   const readySourceIds = new Set(
     state.processingJobs
-      .filter((job) => job.status === 'ready')
+      .filter(isStudyUsableProcessingJob)
       .map((job) => job.sourceId)
   );
 
   return state.chunks.some((chunk) => {
-    const hasEmbedding = state.embeddings.some((item) => item.chunkId === chunk.id);
-    return chunk.bookId === numericId && readySourceIds.has(chunk.sourceId) && hasEmbedding;
+    return chunk.bookId === numericId && readySourceIds.has(chunk.sourceId);
   });
+}
+
+function isStudyUsableProcessingJob(job?: {
+  status: SourceProcessingStatus;
+  errorMessage?: string | null;
+}) {
+  return (
+    job?.status === 'ready' ||
+    (
+      job?.status === 'failed' &&
+      Boolean(job.errorMessage?.startsWith('ALAB saved readable text'))
+    )
+  );
 }
 
 export async function hasProcessingSources(bookId: string): Promise<boolean> {

@@ -97,11 +97,12 @@ function chunkPage(page: PageText) {
   return chunks;
 }
 
-function errorMessageForPdfFailure(error: unknown) {
+function detailsForPdfFailure(error: unknown): PdfFailureDetails {
   const code =
     typeof error === 'object' && error && 'code' in error
       ? String((error as { code?: unknown }).code)
       : '';
+  const message = error instanceof Error ? error.message : String(error);
 
   if (code === 'PASSWORD_REQUIRED') {
     return {
@@ -154,6 +155,18 @@ function errorMessageForPdfFailure(error: unknown) {
   const details = detailsForPdfFailure(error);
 
   return withDiagnostic(details.userMessage, details);
+}
+
+function withDiagnostic(message: string, details: PdfFailureDetails) {
+  const diagnosticParts = [details.code, details.message]
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+  if (diagnosticParts.length === 0) {
+    return message;
+  }
+
+  return `${message} (${diagnosticParts.join(': ')})`;
 }
 
 export async function processSourcePdfPlaceholder(
@@ -284,28 +297,52 @@ export async function processSourcePdfPlaceholder(
 
     const savedChunks = await replaceSourceChunks(sourceId, chunks);
     let indexingWasSkipped = false;
+    let savedEmbeddingCount = 0;
 
     if (options) {
       await setStatus('embedding');
 
-      for (const chunk of savedChunks) {
+      for (const [index, chunk] of savedChunks.entries()) {
+        setProgress({
+          phase: 'embedding',
+          message: `Preparing lesson search ${index + 1} of ${savedChunks.length}...`,
+          percent: Math.min(
+            96,
+            Math.round(65 + ((index + 1) / savedChunks.length) * 30)
+          ),
+          current: index + 1,
+          total: savedChunks.length,
+        });
+
         const embedding = await options.embedText(chunk.text);
 
-          if (!embedding) {
-            skippedEmbeddingIndexing = true;
-            indexingWasSkipped = true;
-            break;
-          }
-
-          await saveChunkEmbedding(
-            chunk.id,
-            options.modelName,
-            embedding
-          );
+        if (!embedding) {
+          indexingWasSkipped = true;
+          break;
         }
+
+        await saveChunkEmbedding(
+          chunk.id,
+          options.modelName,
+          embedding
+        );
+        savedEmbeddingCount += 1;
       }
     }
 
+    if (indexingWasSkipped || savedEmbeddingCount !== savedChunks.length) {
+      console.warn(
+        `ALAB saved readable text for source ${sourceId}, but lesson-search indexing was incomplete. The source will use text search fallback.`
+      );
+    }
+
+    setProgress({
+      phase: 'complete',
+      message: 'Ready to study',
+      percent: 100,
+      current: savedEmbeddingCount,
+      total: savedChunks.length,
+    });
     await setStatus('ready');
   } catch (error) {
     await setStatus(

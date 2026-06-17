@@ -128,4 +128,4 @@ if [ -n "$DEVICE_SERIAL" ]; then
 fi
 
 cd "$PROJECT_ROOT"
-npx expo run:android "${ARGS[@]}"
+npx expo run:android "${ARGS[@]+"${ARGS[@]}"}"

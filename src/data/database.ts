@@ -918,9 +918,14 @@ export async function hasReadySources(bookId: string): Promise<boolean> {
      FROM source_chunks
      INNER JOIN source_processing_jobs
        ON source_processing_jobs.source_id = source_chunks.source_id
-     INNER JOIN chunk_embeddings
-       ON chunk_embeddings.chunk_id = source_chunks.id
-     WHERE source_chunks.book_id = ? AND source_processing_jobs.status = 'ready'`,
+     WHERE source_chunks.book_id = ?
+       AND (
+         source_processing_jobs.status = 'ready'
+         OR (
+           source_processing_jobs.status = 'failed'
+           AND source_processing_jobs.error_message LIKE 'ALAB saved readable text%'
+         )
+       )`,
     numericId
   );
 
@@ -942,9 +947,14 @@ export async function hasReadyStudyChunks(bookId: string): Promise<boolean> {
      FROM source_chunks
      INNER JOIN source_processing_jobs
        ON source_processing_jobs.source_id = source_chunks.source_id
-     INNER JOIN chunk_embeddings
-       ON chunk_embeddings.chunk_id = source_chunks.id
-     WHERE source_chunks.book_id = ? AND source_processing_jobs.status = 'ready'`,
+     WHERE source_chunks.book_id = ?
+       AND (
+         source_processing_jobs.status = 'ready'
+         OR (
+           source_processing_jobs.status = 'failed'
+           AND source_processing_jobs.error_message LIKE 'ALAB saved readable text%'
+         )
+       )`,
     numericId
   );
 

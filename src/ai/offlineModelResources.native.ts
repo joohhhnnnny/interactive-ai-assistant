@@ -34,14 +34,14 @@ export type OfflineModelResource = {
 };
 
 export const offlineSearchModelResources: OfflineModelResource[] = [
-  { label: 'lesson search model', source: offlineEmbeddingModel.modelSource },
-  { label: 'lesson search tokenizer', source: offlineEmbeddingModel.tokenizerSource },
+  { label: 'lesson search files', source: offlineEmbeddingModel.modelSource },
+  { label: 'lesson search vocabulary', source: offlineEmbeddingModel.tokenizerSource },
 ];
 
 export const offlineAnswerModelResources: OfflineModelResource[] = [
-  { label: 'answer helper model', source: offlineLlmModel.modelSource },
-  { label: 'answer helper tokenizer', source: offlineLlmModel.tokenizerSource },
-  { label: 'answer helper settings', source: offlineLlmModel.tokenizerConfigSource },
+  { label: 'study helper files', source: offlineLlmModel.modelSource },
+  { label: 'study helper vocabulary', source: offlineLlmModel.tokenizerSource },
+  { label: 'study helper settings', source: offlineLlmModel.tokenizerConfigSource },
 ];
 
 export const offlineModelResources: OfflineModelResource[] = [

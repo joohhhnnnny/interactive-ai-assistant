@@ -134,6 +134,10 @@ function QuizPanelContent({ text }: { text: string }) {
 
   const selectedAnswer = selectedAnswers[activeIndex];
   const correctOption = getCorrectOptionText(activeQuestion);
+  const selectedAnswerIsCorrect = isCorrectQuizAnswer(
+    activeQuestion,
+    selectedAnswer
+  );
   const isLastQuestion = activeIndex === questions.length - 1;
 
   return (
@@ -247,9 +251,19 @@ function QuizPanelContent({ text }: { text: string }) {
 
         {submitted ? (
           <View style={styles.answerCard}>
+            {activeQuestion.options.length > 0 ? (
+              <Text style={styles.answerText}>
+                {selectedAnswerIsCorrect ? 'Correct!' : 'Not quite.'}
+              </Text>
+            ) : null}
+            {selectedAnswer && activeQuestion.options.length > 0 ? (
+              <Text style={styles.answerExplanation}>
+                Your answer: {selectedAnswer}
+              </Text>
+            ) : null}
             {correctOption || activeQuestion.answer ? (
               <Text style={styles.answerText}>
-                Answer: {correctOption || activeQuestion.answer}
+                Correct answer: {correctOption || activeQuestion.answer}
               </Text>
             ) : null}
             {activeQuestion.explanation ? (

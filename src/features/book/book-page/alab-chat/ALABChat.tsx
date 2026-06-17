@@ -11,6 +11,48 @@ import { formatAiStatus, formatAnalysisDuration, getComposerPlaceholder, getStud
 import { RenderedMarkdown, TypingDots } from './MessageContent';
 import { styles } from './styles';
 import { StudyToolPanel } from './StudyToolPanel';
+import { parseFlashcards, parseQuizQuestions } from './studyToolUtils';
+
+function getReadyStudyToolKind(
+  tool: 'quiz' | 'flashcards',
+  answer: {
+    text: string;
+    sources: string[];
+    answerMode: string;
+  }
+): ChatMessage['kind'] | null {
+  if (answer.answerMode !== 'study_tool' || answer.sources.length === 0) {
+    return null;
+  }
+
+  if (tool === 'quiz') {
+    return parseQuizQuestions(answer.text).length > 0 ? 'quiz' : null;
+  }
+
+  return parseFlashcards(answer.text).length > 0 ? 'flashcards' : null;
+}
+
+function isOpenableStudyMessage(message: ChatMessage) {
+  if (message.role !== 'ai') {
+    return false;
+  }
+
+  if (message.kind === 'quiz') {
+    return parseQuizQuestions(message.text).length > 0;
+  }
+
+  if (message.kind === 'flashcards') {
+    return parseFlashcards(message.text).length > 0;
+  }
+
+  return false;
+}
+
+function getStudyToolNotReadyMessage(tool: 'quiz' | 'flashcards') {
+  return tool === 'quiz'
+    ? 'ALAB tried to make a quiz, but it was not clean enough to open yet. Please ask again after the lesson finishes preparing.'
+    : 'ALAB tried to make flashcards, but they were not clean enough to open yet. Please ask again after the lesson finishes preparing.';
+}
 
 export function ALABChat({
   book,
@@ -165,18 +207,22 @@ export function ALABChat({
         return;
       }
 
+      const studyToolKind = intent
+        ? getReadyStudyToolKind(intent.tool, answer)
+        : null;
       const aiKind: ChatMessage['kind'] = intent
-        ? answer.sources.length > 0
-          ? intent.tool
-          : 'status'
+        ? studyToolKind ?? 'status'
         : answer.answerMode === 'status'
           ? 'status'
           : 'answer';
+      const aiText = intent && !studyToolKind
+        ? getStudyToolNotReadyMessage(intent.tool)
+        : answer.text;
       const aiMessage: ChatMessage = {
         id: String(Date.now() + 1),
         role: 'ai',
-        text: answer.text,
-        sources: answer.sources,
+        text: aiText,
+        sources: studyToolKind ? answer.sources : undefined,
         analysisText: `Analyzed ${formatAnalysisDuration(Date.now() - startedAt)}`,
         kind: aiKind,
       };
@@ -349,6 +395,7 @@ export function ALABChat({
           <View style={styles.messageList}>
             {messages.map((message) => {
               const isUser = message.role === 'user';
+              const canOpenStudyMessage = isOpenableStudyMessage(message);
 
               return (
                 <View
@@ -368,11 +415,11 @@ export function ALABChat({
                       <Text style={[styles.messageText, styles.userMessageText]}>
                         {message.text}
                       </Text>
-                    ) : message.kind === 'quiz' ? (
+                    ) : message.kind === 'quiz' && canOpenStudyMessage ? (
                       <Text style={styles.messageText}>
                         Your practice quiz is ready.
                       </Text>
-                    ) : message.kind === 'flashcards' ? (
+                    ) : message.kind === 'flashcards' && canOpenStudyMessage ? (
                       <Text style={styles.messageText}>
                         Your flashcards are ready.
                       </Text>
@@ -391,8 +438,7 @@ export function ALABChat({
                       </View>
                     ) : null}
 
-                      {!isUser &&
-                    (message.kind === 'quiz' || message.kind === 'flashcards') ? (
+                      {!isUser && canOpenStudyMessage ? (
                       <Pressable
                         onPress={() => setActiveStudyMessage(message)}
                         style={({ pressed }) => [

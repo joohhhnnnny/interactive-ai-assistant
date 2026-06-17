@@ -130,7 +130,7 @@ export function useOfflineStudyHelperStatus() {
 
           if (isActive) {
             setRecoveryMessage(
-              'ALAB cleared an unfinished answer helper download. You can prepare it again.'
+              'ALAB cleared an unfinished study helper download. You can prepare it again.'
             );
           }
         }
@@ -216,10 +216,10 @@ export function useOfflineStudyHelperStatus() {
         await saveAppSetting(searchModelProfileKey, offlineSearchModelProfile);
         setIsSearchReady(true);
         setProgress(45);
-        setStatusMessage('Lesson search is ready. Preparing answer helper...');
+        setStatusMessage('Lesson search is ready. Preparing study helper...');
       } else {
         setProgress(45);
-        setStatusMessage('Lesson search is ready. Preparing answer helper...');
+        setStatusMessage('Lesson search is ready. Preparing study helper...');
       }
 
       stage = 'answer';
@@ -325,10 +325,10 @@ function getErrorMessage(error: unknown) {
 }
 
 function getRecoveryMessage(error: unknown, stage: DownloadStage) {
-  const helperName = stage === 'search' ? 'lesson search helper' : 'answer helper';
+  const helperName = stage === 'search' ? 'lesson search' : 'study helper';
 
   if (isUnauthorizedDownload(error)) {
-    return `The ${helperName} model download was blocked by the model host. This is not a PDF problem.`;
+    return `The ${helperName} download was blocked. This is not a PDF problem.`;
   }
 
   if (getErrorCode(error) === RnExecutorchErrorCode.ResourceFetcherDownloadInProgress) {
@@ -336,7 +336,7 @@ function getRecoveryMessage(error: unknown, stage: DownloadStage) {
   }
 
   if (stage === 'answer' && isDownloadError(error)) {
-    return 'Lesson search is ready. The answer helper download did not finish, so PDFs can still be indexed while you retry.';
+    return 'Lesson search is ready. The study helper download did not finish, so PDFs can still be prepared while you retry.';
   }
 
   if (isDownloadError(error)) {
@@ -349,12 +349,12 @@ function getRecoveryMessage(error: unknown, stage: DownloadStage) {
 function getFailureDetail(error: unknown, stage: DownloadStage) {
   const code = getErrorCode(error);
   const message = getErrorMessage(error);
-  const helperName = stage === 'search' ? 'lesson search model' : 'answer helper model';
+  const helperName = stage === 'search' ? 'lesson search files' : 'study helper files';
 
   if (isUnauthorizedDownload(error)) {
     return code
-      ? `Error ${code}: ${helperName} download was blocked by Hugging Face (401 Unauthorized).`
-      : `${helperName} download was blocked by Hugging Face (401 Unauthorized).`;
+      ? `Error ${code}: ${helperName} could not be downloaded because access was blocked.`
+      : `${helperName} could not be downloaded because access was blocked.`;
   }
 
   if (code === RnExecutorchErrorCode.ResourceFetcherDownloadInProgress) {

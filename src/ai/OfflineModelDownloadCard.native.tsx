@@ -76,12 +76,12 @@ function OfflineModelDownloadCardView({ helper }: { helper: StudyHelperStatus })
         <Text style={styles.title}>Study helper</Text>
         <Text style={styles.body}>
           {helper.isSearchReady
-            ? 'Lesson search is ready. Finish preparing the answer helper for richer offline answers.'
-            : 'Prepare lesson search first, then ALAB can index your uploaded PDFs for better matching.'}
+            ? 'Lesson search is ready. You can upload PDFs now, then finish preparing the study helper for fuller offline answers.'
+            : 'Prepare the study helper first so ALAB can read and search your uploaded lessons.'}
         </Text>
         {helper.isSearchReady ? (
           <Text style={styles.readyNote}>
-            PDF semantic search is ready.
+            Lesson search is ready.
           </Text>
         ) : null}
         {helper.recoveryMessage ? (
@@ -136,7 +136,7 @@ function OfflineModelDownloadCardView({ helper }: { helper: StudyHelperStatus })
           {helper.isLoading
             ? `Processing ${helper.progress}%`
             : helper.isSearchReady
-              ? 'Prepare Answer Helper'
+              ? 'Finish Study Helper'
               : 'Prepare Study Helper'}
         </Text>
       </Pressable>
