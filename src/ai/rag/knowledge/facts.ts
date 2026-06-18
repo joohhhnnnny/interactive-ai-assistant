@@ -79,13 +79,14 @@ export function uniqueFacts(facts: LessonFact[]) {
 }
 
 export function cleanStudyTerm(term: string) {
-  return titleCase(
+  const cleanTerm = normalizeStudyTermPhrase(
     cleanLessonText(term)
       .replace(/^\W+|\W+$/g, '')
-      .replace(/^(the|a|an)\s+/i, '')
       .replace(/\s+/g, ' ')
       .trim()
   );
+
+  return titleCase(cleanTerm);
 }
 
 export function normalizeOption(value: string) {
@@ -195,6 +196,29 @@ function parseLessonFact(sentence: string): LessonFact | null {
 
 function parseLessonFactFromDefinition(sentence: string): LessonFact | null {
   const cleanSentence = cleanChunkText(sentence);
+  const calledPhraseMatch = cleanSentence.match(
+    /^(.{4,170}?)\s+(?:is|are)\s+called\s+(?:a|an|the)?\s*([A-Za-z][A-Za-z0-9 /()+#.-]{1,35})(?:[,.;:]|\s+and\b|$)/i
+  );
+
+  if (calledPhraseMatch) {
+    const rawTerm = cleanStudyTerm(calledPhraseMatch[2]);
+    const calledSubject = cleanCalledSubject(calledPhraseMatch[1]);
+    const detail = `${calledSubject} is called _____`;
+
+    if (
+      isUsefulTerm(rawTerm) &&
+      isUsefulSentence(detail) &&
+      isAnswerableFact(rawTerm, detail)
+    ) {
+      return {
+        term: rawTerm,
+        detail,
+        sourceText: cleanSentence,
+        kind: 'term',
+      };
+    }
+  }
+
   const calledMatch = cleanSentence.match(
     /^(.{12,170}?)\s+(?:is|are)\s+called\s+(?:a|an|the)?\s*([A-Za-z][A-Za-z0-9 /()+#.-]{1,35})\.?$/i
   );
@@ -258,14 +282,88 @@ function cleanStudyDetail(detail: string, term: string) {
     .trim();
 }
 
+function normalizeStudyTermPhrase(term: string) {
+  let cleanTerm = term
+    .replace(/^(the|a|an|n)\s+/i, '')
+    .replace(/^(?:concept|idea|meaning|definition)\s+of\s+(?:the|a|an)?\s*/i, '')
+    .replace(/^(?:term|word|phrase)\s+(?:for|called|named)\s+(?:the|a|an)?\s*/i, '')
+    .replace(/^(?:called|named|known as)\s+(?:the|a|an)?\s*/i, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  cleanTerm = collapseRepeatedWords(cleanTerm);
+  cleanTerm = collapseRepeatedArticlePhrase(cleanTerm);
+  cleanTerm = collapseRepeatedPhrase(cleanTerm);
+
+  return cleanTerm;
+}
+
+function collapseRepeatedWords(value: string) {
+  const words = value.split(/\s+/).filter(Boolean);
+  const collapsedWords: string[] = [];
+
+  for (const word of words) {
+    const previousWord = collapsedWords[collapsedWords.length - 1];
+
+    if (previousWord && normalizeOption(previousWord) === normalizeOption(word)) {
+      continue;
+    }
+
+    collapsedWords.push(word);
+  }
+
+  return collapsedWords.join(' ');
+}
+
+function collapseRepeatedPhrase(value: string) {
+  const words = value.split(/\s+/).filter(Boolean);
+
+  for (let size = Math.floor(words.length / 2); size >= 1; size -= 1) {
+    const left = words.slice(0, size).join(' ');
+    const right = words.slice(size, size * 2).join(' ');
+
+    if (
+      size * 2 === words.length &&
+      normalizeOption(left) === normalizeOption(right)
+    ) {
+      return left;
+    }
+  }
+
+  return value;
+}
+
+function collapseRepeatedArticlePhrase(value: string) {
+  const match = value.match(/^(.+?)\s+(?:a|an|the|n)\s+(.+)$/i);
+
+  if (!match) {
+    return value;
+  }
+
+  const left = stripLeadingArticleFragment(match[1]);
+  const right = stripLeadingArticleFragment(match[2]);
+
+  if (normalizeOption(left) === normalizeOption(right)) {
+    return right;
+  }
+
+  return value;
+}
+
+function stripLeadingArticleFragment(value: string) {
+  return value.replace(/^(?:a|an|the|n)\s+/i, '').trim();
+}
+
 function isUsefulTerm(term: string) {
   const normalized = term.toLowerCase();
 
   return (
     term.length >= 3 &&
     term.length <= 45 &&
+    normalized.split(/\s+/).length <= 5 &&
     !term.includes(',') &&
     !term.includes('?') &&
+    !/^(this|that|these|those|they|them|their|it|its|you|your|we|our|what|which|who|when|where|why|how)\b/i.test(term) &&
     !/\b(is|are|means|refers|called|enough|erased|first|level|pages|designed|absolute|beginner|everywhere|today)\b/i.test(term) &&
     !normalized.includes('question') &&
     !normalized.includes('answer') &&
@@ -291,10 +389,18 @@ function isAnswerableFact(term: string, detail: string) {
     !normalizedDetail.includes('beginner pages') &&
     !normalizedDetail.includes('first edition') &&
     !normalizedDetail.includes('ready to study') &&
-    !normalizedDetail.startsWith('this ') &&
-    !normalizedDetail.startsWith('it ') &&
+    (detail.includes('_____') || !normalizedDetail.startsWith('this ')) &&
+    (detail.includes('_____') || !normalizedDetail.startsWith('it ')) &&
     normalizedDetail.split(/\s+/).length >= 4
   );
+}
+
+function cleanCalledSubject(value: string) {
+  return cleanLessonText(value)
+    .replace(/\b(?:this|that)\s+/i, 'the ')
+    .replace(/\s+/g, ' ')
+    .replace(/[.?!]+$/g, '')
+    .trim();
 }
 
 function getLessonFactCandidates(text: string) {
@@ -337,6 +443,7 @@ const genericStudyTerms = new Set([
   'digital tool',
   'edition',
   'example',
+  'fun fact',
   'hardware',
   'lesson',
   'module',
@@ -347,6 +454,7 @@ const genericStudyTerms = new Set([
   'software',
   'software hardware',
   'system',
+  'this mistake',
   'this',
   'topic',
 ]);

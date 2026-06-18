@@ -37,6 +37,7 @@ export function BottomSheet({
     () => getSheetMaxHeight(height, snapPoints),
     [height, snapPoints]
   );
+  const hiddenTranslateY = height;
 
   const handleClose = useCallback(() => {
     Keyboard.dismiss();
@@ -45,34 +46,50 @@ export function BottomSheet({
 
   useEffect(() => {
     if (visible) {
+      let animationFrame: number | null = null;
+
+      backdropOpacity.stopAnimation();
+      sheetTranslateY.stopAnimation();
+      backdropOpacity.setValue(0);
+      sheetTranslateY.setValue(hiddenTranslateY);
       setIsMounted(true);
-      Animated.parallel([
-        Animated.timing(backdropOpacity, {
-          toValue: 1,
-          duration: 150,
-          easing: Easing.out(Easing.ease),
-          useNativeDriver: true,
-        }),
-        Animated.timing(sheetTranslateY, {
-          toValue: 0,
-          duration: 180,
-          easing: Easing.out(Easing.cubic),
-          useNativeDriver: true,
-        }),
-      ]).start();
-      return;
+
+      animationFrame = requestAnimationFrame(() => {
+        Animated.parallel([
+          Animated.timing(backdropOpacity, {
+            toValue: 1,
+            duration: 170,
+            easing: Easing.out(Easing.ease),
+            useNativeDriver: true,
+          }),
+          Animated.timing(sheetTranslateY, {
+            toValue: 0,
+            duration: 240,
+            easing: Easing.out(Easing.cubic),
+            useNativeDriver: true,
+          }),
+        ]).start();
+      });
+
+      return () => {
+        if (animationFrame !== null) {
+          cancelAnimationFrame(animationFrame);
+        }
+      };
     }
 
+    backdropOpacity.stopAnimation();
+    sheetTranslateY.stopAnimation();
     Animated.parallel([
       Animated.timing(backdropOpacity, {
         toValue: 0,
-        duration: 120,
+        duration: 140,
         easing: Easing.in(Easing.ease),
         useNativeDriver: true,
       }),
       Animated.timing(sheetTranslateY, {
-        toValue: height,
-        duration: 160,
+        toValue: hiddenTranslateY,
+        duration: 210,
         easing: Easing.in(Easing.cubic),
         useNativeDriver: true,
       }),
@@ -81,7 +98,7 @@ export function BottomSheet({
         setIsMounted(false);
       }
     });
-  }, [backdropOpacity, height, sheetTranslateY, visible]);
+  }, [backdropOpacity, hiddenTranslateY, sheetTranslateY, visible]);
 
   if (!isMounted) {
     return null;

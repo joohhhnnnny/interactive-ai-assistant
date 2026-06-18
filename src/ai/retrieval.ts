@@ -64,16 +64,43 @@ export async function retrieveStudyToolChunks(
   embeddingModelName?: string,
   topK = 20
 ): Promise<RetrievedChunk[]> {
+  const targetChunkCount = Math.max(topK, Math.ceil(topK * 1.5));
   const result = await searchBookChunks({
     bookId,
     query: 'key terms concepts definitions lesson facts',
     queryEmbedding,
     embeddingModelName,
-    topK,
+    topK: targetChunkCount,
     fallbackToReadableChunks: true,
   });
+  const chunks = [...result.chunks];
+  const seenChunkIds = new Set(chunks.map((chunk) => chunk.id));
+  const seenChunkText = new Set(chunks.map((chunk) => getChunkDedupeKey(chunk.text)));
 
-  return result.chunks;
+  if (chunks.length < targetChunkCount) {
+    const readableChunks = await listSourceChunksByBook(bookId, targetChunkCount);
+
+    for (const [index, chunk] of readableChunks.entries()) {
+      const chunkTextKey = getChunkDedupeKey(chunk.text);
+
+      if (seenChunkIds.has(chunk.id) || seenChunkText.has(chunkTextKey)) {
+        continue;
+      }
+
+      seenChunkIds.add(chunk.id);
+      seenChunkText.add(chunkTextKey);
+      chunks.push({
+        ...chunk,
+        score: Math.max(0.1, 0.7 - index * 0.02),
+      });
+
+      if (chunks.length >= targetChunkCount) {
+        break;
+      }
+    }
+  }
+
+  return chunks;
 }
 
 export async function retrieveBookOverviewChunks(
@@ -82,10 +109,64 @@ export async function retrieveBookOverviewChunks(
 ): Promise<RetrievedChunk[]> {
   const chunks = await listSourceChunksByBook(bookId, topK);
 
-  return chunks.map((chunk, index) => ({
-    ...chunk,
-    score: 1 - index * 0.02,
-  }));
+  return selectDiverseChunks(
+    chunks.map((chunk, index) => ({
+      ...chunk,
+      score: 1 - index * 0.02,
+    })),
+    topK
+  );
+}
+
+export async function retrieveSummaryChunks(
+  bookId: string,
+  question: string,
+  conversationContext?: string,
+  queryEmbedding?: ArrayLike<number> | null,
+  embeddingModelName?: string,
+  topK = 12
+): Promise<RetrievedChunk[]> {
+  const contextualQuery = buildContextualSummaryQuery(question, conversationContext);
+  const terms = getSummarySearchTerms(contextualQuery);
+  const pageNumber =
+    getReferencedPageNumber(question) ??
+    getReferencedPageNumber(conversationContext ?? '');
+
+  if (pageNumber) {
+    const chunks = await listSourceChunksByBook(bookId, 500);
+    const pageChunks = chunks.filter((chunk) => chunk.pageNumber === pageNumber);
+
+    if (pageChunks.length > 0) {
+      return pageChunks
+        .map((chunk, index) => ({
+          ...chunk,
+          score: Math.max(0.2, 1 + scoreChunkByTerms(chunk.text, terms) - index * 0.01),
+        }))
+        .sort((left, right) => right.score - left.score || left.chunkIndex - right.chunkIndex)
+        .filter(createDiverseChunkFilter())
+        .slice(0, topK);
+    }
+  }
+
+  if (
+    contextualQuery.trim() &&
+    (!isVagueSummaryQuestion(question) || terms.length > 0)
+  ) {
+    const result = await searchBookChunks({
+      bookId,
+      query: contextualQuery,
+      queryEmbedding,
+      embeddingModelName,
+      topK,
+      fallbackToReadableChunks: false,
+    });
+
+    if (result.chunks.length > 0) {
+      return result.chunks;
+    }
+  }
+
+  return retrieveBookOverviewChunks(bookId, topK);
 }
 
 export function formatSourceLabel(chunk: SourceChunk) {
@@ -148,6 +229,31 @@ export function buildGeneralMessages(question: string, conversationContext?: str
   ];
 }
 
+export function buildStudyToolMessages(
+  tool: 'quiz' | 'flashcards',
+  bookTitle: string,
+  chunks: RetrievedChunk[],
+  options?: {
+    itemCount?: number;
+    mode?: 'mcq' | 'fill_blank' | 'essay';
+    conversationContext?: string;
+  }
+) {
+  const itemCount = options?.itemCount ?? (tool === 'quiz' ? 10 : 20);
+  const mode = options?.mode ?? 'mcq';
+  const request = tool === 'quiz'
+    ? buildQuizRequest(itemCount, mode)
+    : buildFlashcardRequest(itemCount);
+  const contextBlock = options?.conversationContext
+    ? `\nRecent conversation:\n${options.conversationContext}\nWhen possible, avoid repeating previous quiz questions, flashcards, or examples.`
+    : '';
+
+  return buildGroundedMessages(
+    `${request}\nBook title: ${bookTitle}${contextBlock}`,
+    chunks
+  );
+}
+
 function trimContextText(text: string) {
   const cleanText = cleanLessonText(text).replace(/\s+/g, ' ').trim();
 
@@ -193,30 +299,116 @@ function getRetrievalConfidence(
   return 'low';
 }
 
-export function buildStudyToolMessages(
-  tool: 'quiz' | 'flashcards',
-  bookTitle: string,
-  chunks: RetrievedChunk[],
-  options?: {
-    itemCount?: number;
-    mode?: 'mcq' | 'fill_blank' | 'essay';
-    conversationContext?: string;
-  }
-) {
-  const itemCount = options?.itemCount ?? (tool === 'quiz' ? 10 : 20);
-  const mode = options?.mode ?? 'mcq';
-  const request = tool === 'quiz'
-    ? buildQuizRequest(itemCount, mode)
-    : buildFlashcardRequest(itemCount);
+function buildContextualSummaryQuery(question: string, conversationContext?: string) {
+  const recentStudentLines = (conversationContext ?? '')
+    .split('\n')
+    .filter((line) => /^Student\b/i.test(line))
+    .slice(-4)
+    .join('\n');
 
-  const contextBlock = options?.conversationContext
-    ? `\nRecent conversation:\n${options.conversationContext}\nWhen possible, avoid repeating previous quiz questions, flashcards, or examples.`
-    : '';
+  return [recentStudentLines, question]
+    .filter(Boolean)
+    .join('\n')
+    .trim();
+}
 
-  return buildGroundedMessages(
-    `${request}\nBook title: ${bookTitle}${contextBlock}`,
-    chunks
+function getReferencedPageNumber(text: string) {
+  const match =
+    /\bpage\s*(?:number\s*)?(\d{1,4})\b/i.exec(text) ??
+    /\bp\.\s*(\d{1,4})\b/i.exec(text);
+  const pageNumber = match ? Number(match[1]) : null;
+
+  return pageNumber && Number.isFinite(pageNumber) && pageNumber > 0
+    ? pageNumber
+    : null;
+}
+
+function isVagueSummaryQuestion(question: string) {
+  const cleanQuestion = question.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').trim();
+
+  return (
+    /\b(summary|summarize|recap|explain)\b/.test(cleanQuestion) &&
+    /\b(it|this|that|them|topic|lesson|part)\b/.test(cleanQuestion) &&
+    !/\bpage\s*(?:number\s*)?\d{1,4}\b/.test(cleanQuestion)
   );
+}
+
+function getSummarySearchTerms(text: string) {
+  const stopWords = new Set([
+    'about',
+    'alab',
+    'answer',
+    'book',
+    'can',
+    'could',
+    'from',
+    'give',
+    'it',
+    'its',
+    'lesson',
+    'message',
+    'page',
+    'please',
+    'question',
+    'student',
+    'summary',
+    'summarize',
+    'that',
+    'this',
+    'topic',
+    'what',
+    'with',
+    'would',
+  ]);
+
+  return Array.from(
+    new Set(
+      text
+        .toLowerCase()
+        .replace(/[^a-z0-9\s]/g, ' ')
+        .split(/\s+/)
+        .filter((term) => term.length > 2 && !stopWords.has(term))
+    )
+  ).slice(0, 12);
+}
+
+function scoreChunkByTerms(text: string, terms: string[]) {
+  if (terms.length === 0) {
+    return 0;
+  }
+
+  const lowerText = text.toLowerCase();
+  const matches = terms.filter((term) => lowerText.includes(term)).length;
+
+  return matches / terms.length;
+}
+
+function selectDiverseChunks<T extends RetrievedChunk>(chunks: T[], topK: number) {
+  return chunks.filter(createDiverseChunkFilter()).slice(0, topK);
+}
+
+function createDiverseChunkFilter() {
+  const seenText = new Set<string>();
+
+  return (chunk: { text: string }) => {
+    const key = getChunkDedupeKey(chunk.text);
+
+    if (!key || seenText.has(key)) {
+      return false;
+    }
+
+    seenText.add(key);
+    return true;
+  };
+}
+
+function getChunkDedupeKey(text: string) {
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 240);
 }
 
 function buildQuizRequest(

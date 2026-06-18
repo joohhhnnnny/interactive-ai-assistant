@@ -8,6 +8,7 @@ import { deleteSourceIndex } from '../../../../ai/rag/vector-store/store';
 import type { SourceProcessingProgress } from '../../../../ai/sourceProcessing';
 import { IconDots, IconPDF, IconPlus } from '../../../../components/icons/icons';
 import { BottomSheet } from '../../../../components/ui/BottomSheet';
+import { LessonScannerAnimation } from '../../../../components/ui/LessonScannerAnimation';
 import { SheetTextInput } from '../../../../components/ui/SheetTextInput';
 import { addSource, deleteSource, listSourcesWithProcessingByBook, renameSource, SourceWithProcessing } from '../../../../data/database';
 import { Book } from '../../../../types/Book';
@@ -541,9 +542,13 @@ export function Sources({
                   </View>
                 ) : null}
 
-                <View style={styles.pdfIconCircle}>
-                  <IconPDF color="#93000A" size={20} />
-                </View>
+                {isProcessingSource(source) ? (
+                  <LessonScannerAnimation compact tone="red" />
+                ) : (
+                  <View style={styles.pdfIconCircle}>
+                    <IconPDF color="#93000A" size={20} />
+                  </View>
+                )}
 
                 <Text style={styles.sourceName} numberOfLines={1}>
                   {source.name}
@@ -663,6 +668,7 @@ function renderUploadProgress(progress: UploadProgress) {
 
   return (
     <View style={styles.uploadProgressCard}>
+      <LessonScannerAnimation compact tone="red" />
       <Text style={styles.uploadProgressTitle} numberOfLines={1}>
         {title}
       </Text>
@@ -721,5 +727,14 @@ function isStudyUsableSource(source: Source) {
       source.processingStatus === 'failed' &&
       Boolean(source.processingError?.startsWith('ALAB saved readable text'))
     )
+  );
+}
+
+function isProcessingSource(source: Source) {
+  return (
+    source.processingStatus === 'pending' ||
+    source.processingStatus === 'extracting' ||
+    source.processingStatus === 'chunking' ||
+    source.processingStatus === 'embedding'
   );
 }

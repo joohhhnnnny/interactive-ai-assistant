@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import {
-    Animated,
-    Easing,
-    Pressable,
-    StyleSheet,
-    Text,
-    TextInput,
-    View,
+  Animated,
+  Easing,
+  Pressable,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
 } from 'react-native';
 import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 import { IconArrow } from '../../components/icons/icons';
@@ -105,7 +105,7 @@ export function RegistrationScreen({ onComplete }: RegistrationScreenProps) {
               <Text style={styles.label}>FIRST NAME</Text>
               <TextInput
                 value={firstName}
-                placeholder="e.g. Maria"
+                placeholder="e.g. Robert"
                 placeholderTextColor="#747685"
                 onChangeText={(text) => {
                   setFirstName(text);
@@ -126,7 +126,7 @@ export function RegistrationScreen({ onComplete }: RegistrationScreenProps) {
               <Text style={styles.label}>LAST NAME</Text>
               <TextInput
                 value={lastName}
-                placeholder="e.g. Santos"
+                placeholder="e.g. Aracena"
                 placeholderTextColor="#747685"
                 onChangeText={(text) => {
                   setLastName(text);

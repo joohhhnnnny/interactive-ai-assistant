@@ -125,11 +125,11 @@ export async function searchBookChunks({
         score: cosineSimilarity(queryEmbedding, chunk.embedding ?? []),
       }))
       .filter((chunk) => chunk.score >= minimumSimilarity)
-      .sort((a, b) => b.score - a.score)
-      .slice(0, topK);
+      .sort((a, b) => b.score - a.score);
+    const diverseChunks = selectDiverseChunks(rankedChunks, topK);
 
-    if (rankedChunks.length > 0) {
-      return buildSearchResult(rankedChunks, 'embedding');
+    if (diverseChunks.length > 0) {
+      return buildSearchResult(diverseChunks, 'embedding');
     }
   }
 
@@ -143,22 +143,24 @@ export async function searchBookChunks({
         score: scoreTextByTerms(chunk.text, terms),
       }))
       .filter((chunk) => chunk.score >= minimumFallbackScore)
-      .sort((a, b) => b.score - a.score)
-      .slice(0, topK);
+      .sort((a, b) => b.score - a.score);
+    const diverseChunks = selectDiverseChunks(chunks, topK);
 
-    if (chunks.length > 0) {
-      return buildSearchResult(chunks, 'text');
+    if (diverseChunks.length > 0) {
+      return buildSearchResult(diverseChunks, 'text');
     }
   }
 
   if (fallbackToReadableChunks) {
     const chunks = await listSourceChunksByBook(bookId, topK);
 
+    const fallbackChunks = chunks.map((chunk, index) => ({
+      ...chunk,
+      score: 1 - index * 0.03,
+    }));
+
     return buildSearchResult(
-      chunks.map((chunk, index) => ({
-        ...chunk,
-        score: 1 - index * 0.03,
-      })),
+      selectDiverseChunks(fallbackChunks, topK),
       chunks.length > 0 ? 'text' : 'none'
     );
   }
@@ -227,6 +229,37 @@ function scoreTextByTerms(text: string, terms: string[]) {
   const matchedTerms = terms.filter((term) => normalizedText.includes(term));
 
   return matchedTerms.length / terms.length;
+}
+
+function selectDiverseChunks<T extends RagRetrievedChunk>(chunks: T[], topK: number) {
+  const seenText = new Set<string>();
+  const selected: T[] = [];
+
+  for (const chunk of chunks) {
+    const key = getChunkDedupeKey(chunk.text);
+
+    if (!key || seenText.has(key)) {
+      continue;
+    }
+
+    seenText.add(key);
+    selected.push(chunk);
+
+    if (selected.length >= topK) {
+      break;
+    }
+  }
+
+  return selected;
+}
+
+function getChunkDedupeKey(text: string) {
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 240);
 }
 
 function buildSearchResult(

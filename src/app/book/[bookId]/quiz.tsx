@@ -1,11 +1,13 @@
 import { useEffect, useState } from 'react';
 import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useOfflineAi } from '../../../ai/useOfflineAi';
 import { getBookById } from '../../../data/database';
+import { QuizScreen } from '../../../features/book/book-page/study-tools/QuizScreen';
+import { useStopOfflineAiBeforeRemove } from '../../../features/book/book-page/useStopOfflineAiBeforeRemove';
 import { LoadingScreen } from '../../../features/loading/LoadingScreen';
-import { BookPage } from '../../../features/book/book-page/BookPage';
 import { Book } from '../../../types/Book';
 
-export default function BookRoute() {
+export default function QuizRoute() {
   const router = useRouter();
   const { bookId } = useLocalSearchParams<{ bookId: string }>();
   const [book, setBook] = useState<Book | null>(null);
@@ -39,22 +41,32 @@ export default function BookRoute() {
     return <LoadingScreen onComplete={() => {}} />;
   }
 
+  return <QuizRouteContent book={book} onBack={() => router.back()} />;
+}
+
+function QuizRouteContent({
+  book,
+  onBack,
+}: {
+  book: Book;
+  onBack: () => void;
+}) {
+  const offlineAi = useOfflineAi(book.id, book.title);
+  useStopOfflineAiBeforeRemove(offlineAi);
+
+  const handleBack = async () => {
+    const didStop = await offlineAi.stopActiveGeneration();
+
+    if (didStop) {
+      onBack();
+    }
+  };
+
   return (
-    <BookPage
+    <QuizScreen
       book={book}
-      onBack={() => router.replace('/bookshelf' as never)}
-      onOpenFlashcards={() =>
-        router.push({
-          pathname: '/book/[bookId]/flashcards',
-          params: { bookId: book.id },
-        } as never)
-      }
-      onOpenQuiz={() =>
-        router.push({
-          pathname: '/book/[bookId]/quiz',
-          params: { bookId: book.id },
-        } as never)
-      }
+      offlineAi={offlineAi}
+      onBack={handleBack}
     />
   );
 }

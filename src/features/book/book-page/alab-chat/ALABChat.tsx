@@ -15,66 +15,19 @@ import { useOfflineSpeech } from '../../../../ai/useOfflineSpeech';
 import { IconMic, IconSend } from '../../../../components/icons/icons';
 import { appendChatMessage, hasProcessingSources, listRecentChatMessagesByBook } from '../../../../data/database';
 import { Book } from '../../../../types/Book';
-import { ChatMessage, OfflineAi, PendingChatPrompt } from '../types';
+import { ChatMessage, OfflineAi } from '../types';
 import { formatAiStatus, formatAnalysisDuration, getComposerPlaceholder, getStudyToolIntent, getVisibleSources, mapStoredChatMessage } from './chatHelpers';
 import { RenderedMarkdown, TypingDots } from './MessageContent';
 import { styles } from './styles';
-import { StudyToolPanel } from './StudyToolPanel';
-import { parseFlashcards, parseQuizQuestions } from './studyToolUtils';
-
-function getReadyStudyToolKind(
-  tool: 'quiz' | 'flashcards',
-  answer: {
-    text: string;
-    sources: string[];
-    answerMode: string;
-  }
-): ChatMessage['kind'] | null {
-  if (answer.answerMode !== 'study_tool' || answer.sources.length === 0) {
-    return null;
-  }
-
-  if (tool === 'quiz') {
-    return parseQuizQuestions(answer.text).length > 0 ? 'quiz' : null;
-  }
-
-  return parseFlashcards(answer.text).length > 0 ? 'flashcards' : null;
-}
-
-function isOpenableStudyMessage(message: ChatMessage) {
-  if (message.role !== 'ai') {
-    return false;
-  }
-
-  if (message.kind === 'quiz') {
-    return parseQuizQuestions(message.text).length > 0;
-  }
-
-  if (message.kind === 'flashcards') {
-    return parseFlashcards(message.text).length > 0;
-  }
-
-  return false;
-}
-
-function getStudyToolNotReadyMessage(tool: 'quiz' | 'flashcards') {
-  return tool === 'quiz'
-    ? 'ALAB tried to make a quiz, but it was not clean enough to open yet. Please ask again after the lesson finishes preparing.'
-    : 'ALAB tried to make flashcards, but they were not clean enough to open yet. Please ask again after the lesson finishes preparing.';
-}
 
 export function ALABChat({
   book,
   offlineAi,
   onComposerFocusChange,
-  pendingPrompt,
-  onPromptHandled,
 }: {
   book: Book;
   offlineAi: OfflineAi;
   onComposerFocusChange?: (isFocused: boolean) => void;
-  pendingPrompt: PendingChatPrompt | null;
-  onPromptHandled: () => void;
 }) {
   const { width } = useWindowDimensions();
   const insets = useSafeAreaInsets();
@@ -83,9 +36,6 @@ export function ALABChat({
   const [input, setInput] = useState('');
   const [isTyping, setIsTyping] = useState(false);
   const [isComposerFocused, setIsComposerFocused] = useState(false);
-  const [activeStudyMessage, setActiveStudyMessage] = useState<ChatMessage | null>(
-    null
-  );
   const offlineSpeech = useOfflineSpeech();
 
   const scrollRef = useRef<ScrollView>(null);
@@ -222,22 +172,14 @@ export function ALABChat({
         return;
       }
 
-      const studyToolKind = intent
-        ? getReadyStudyToolKind(intent.tool, answer)
-        : null;
-      const aiKind: ChatMessage['kind'] = intent
-        ? studyToolKind ?? 'status'
-        : answer.answerMode === 'status'
+      const aiKind: ChatMessage['kind'] = answer.answerMode === 'status'
           ? 'status'
           : 'answer';
-      const aiText = intent && !studyToolKind
-        ? getStudyToolNotReadyMessage(intent.tool)
-        : answer.text;
       const aiMessage: ChatMessage = {
         id: String(Date.now() + 1),
         role: 'ai',
-        text: aiText,
-        sources: studyToolKind ? answer.sources : undefined,
+        text: answer.text,
+        sources: answer.sources,
         analysisText: `Analyzed ${formatAnalysisDuration(Date.now() - startedAt)}`,
         kind: aiKind,
       };
@@ -249,7 +191,7 @@ export function ALABChat({
         kind: aiMessage.kind,
       });
       setMessages((previous) => [
-        ...previous.filter((message) => message.id !== waitingMessageId),
+        ...previous,
         aiMessage,
       ]);
     } catch {
@@ -266,7 +208,7 @@ export function ALABChat({
       };
 
       setMessages((previous) => [
-        ...previous.filter((message) => !message.id.startsWith('waiting-')),
+        ...previous,
         aiMessage,
       ]);
       await appendChatMessage(book.id, {
@@ -370,15 +312,6 @@ export function ALABChat({
     return () => clearTimeout(timer);
   }, [messages, isTyping]);
 
-  useEffect(() => {
-    if (!pendingPrompt) {
-      return;
-    }
-
-    handleSend(pendingPrompt.text);
-    onPromptHandled();
-  }, [handleSend, onPromptHandled, pendingPrompt]);
-
   return (
     <View style={styles.chatRoot}>
       <ScrollView
@@ -398,7 +331,7 @@ export function ALABChat({
 
             <Text style={styles.chatIntroText}>
               I only use the lessons you uploaded. Ask me anything,
-              request a quiz, or ask for a simpler explanation.
+              ask for examples, or ask for a simpler explanation.
             </Text>
 
             <Text style={styles.aiStatusText}>
@@ -409,7 +342,6 @@ export function ALABChat({
           <View style={styles.messageList}>
             {messages.map((message) => {
               const isUser = message.role === 'user';
-              const canOpenStudyMessage = isOpenableStudyMessage(message);
 
               return (
                 <View
@@ -429,14 +361,6 @@ export function ALABChat({
                       <Text style={[styles.messageText, styles.userMessageText]}>
                         {message.text}
                       </Text>
-                    ) : message.kind === 'quiz' && canOpenStudyMessage ? (
-                      <Text style={styles.messageText}>
-                        Your practice quiz is ready.
-                      </Text>
-                    ) : message.kind === 'flashcards' && canOpenStudyMessage ? (
-                      <Text style={styles.messageText}>
-                        Your flashcards are ready.
-                      </Text>
                     ) : (
                       <RenderedMarkdown text={message.text} />
                     )}
@@ -450,22 +374,6 @@ export function ALABChat({
                           </Text>
                         ))}
                       </View>
-                    ) : null}
-
-                      {!isUser && canOpenStudyMessage ? (
-                      <Pressable
-                        onPress={() => setActiveStudyMessage(message)}
-                        style={({ pressed }) => [
-                          styles.studyResultButton,
-                          pressed && styles.pressedScale,
-                        ]}
-                      >
-                        <Text style={styles.studyResultButtonText}>
-                          {message.kind === 'quiz'
-                            ? 'Quiz is ready. Tap to open.'
-                            : 'Flashcards are ready. Tap to open.'}
-                        </Text>
-                      </Pressable>
                     ) : null}
 
                     {!isUser && message.analysisText ? (
@@ -560,14 +468,6 @@ export function ALABChat({
         </View>
       </KeyboardStickyView>
 
-      {activeStudyMessage ? (
-        <View style={styles.studyPanelOverlay}>
-          <StudyToolPanel
-            message={activeStudyMessage}
-            onClose={() => setActiveStudyMessage(null)}
-          />
-        </View>
-      ) : null}
     </View>
   );
 }

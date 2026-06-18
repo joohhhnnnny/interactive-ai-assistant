@@ -9,8 +9,11 @@ import {
 
 export type StudyToolMode = 'mcq' | 'fill_blank' | 'essay';
 
+type QuizQuestionStyle = 'meaning' | 'term' | 'direct';
+
 const quizItemCount = 10;
 const flashcardItemCount = 20;
+const meaningQuestionRatio = 0.25;
 
 export function buildSimpleStudyToolFallback(
   tool: 'quiz' | 'flashcards',
@@ -21,8 +24,11 @@ export function buildSimpleStudyToolFallback(
 ) {
   const { baseSnippets, facts } = buildStudyFacts(chunks);
   const targetCount = getStudyToolItemCount(tool, itemCount);
-  const selectedFacts = tool === 'quiz'
+  const quizFacts = tool === 'quiz'
     ? buildQuizFacts(facts, baseSnippets, targetCount)
+    : [];
+  const selectedFacts = tool === 'quiz'
+    ? repeatToCount(quizFacts, targetCount)
     : repeatToCount(facts, targetCount);
   const variedFacts = rotateItems(selectedFacts, variant);
 
@@ -43,9 +49,16 @@ export function buildSimpleStudyToolFallback(
       .join('\n\n');
   }
 
+  const questionStyles = buildQuizQuestionStyles(variedFacts.length, variant);
   const quizQuestions = variedFacts
     .map((fact, index) =>
-      buildFallbackQuizQuestion(fact, variedFacts, index + variant, mode)
+      buildFallbackQuizQuestion(
+        fact,
+        variedFacts,
+        index + variant,
+        mode,
+        questionStyles[index] ?? 'direct'
+      )
     )
     .filter((question): question is string => Boolean(question));
 
@@ -58,9 +71,15 @@ export function buildSimpleStudyToolFallback(
 
 export function getStudyToolItemCount(
   tool: 'quiz' | 'flashcards',
-  _requestedCount?: number
+  requestedCount?: number
 ) {
-  return tool === 'quiz' ? quizItemCount : flashcardItemCount;
+  const fallbackCount = tool === 'quiz' ? quizItemCount : flashcardItemCount;
+
+  if (!requestedCount || !Number.isFinite(requestedCount)) {
+    return fallbackCount;
+  }
+
+  return Math.max(1, Math.min(50, Math.round(requestedCount)));
 }
 
 export function hasValidMcqQuiz(text: string) {
@@ -168,7 +187,8 @@ function buildFallbackQuizQuestion(
   fact: LessonFact,
   allFacts: LessonFact[],
   index: number,
-  mode: StudyToolMode
+  mode: StudyToolMode,
+  questionStyle: QuizQuestionStyle = 'direct'
 ) {
   if (mode === 'fill_blank') {
     return [
@@ -182,7 +202,7 @@ function buildFallbackQuizQuestion(
     return [
       `Question: Explain ${fact.term} in your own words.`,
       `Answer: ${shortText(fact.detail.replace(/_____+/g, fact.term), 210)}`,
-      `Explanation: Include the lesson idea and one clear example.`,
+      `Explanation: Include the main idea and one clear example.`,
     ].join('\n');
   }
 
@@ -193,7 +213,7 @@ function buildFallbackQuizQuestion(
   const options = buildUniqueOptions(fact, allFacts, index);
 
   if (options.length < 4) {
-    return null;
+    return buildDetailQuizQuestion(fact, allFacts, index);
   }
 
   const correctIndex = options.findIndex(
@@ -203,7 +223,7 @@ function buildFallbackQuizQuestion(
   const correctOption = options[Math.max(0, correctIndex)] ?? fact.term;
 
   return [
-    `Question: ${buildDefinitionQuestion(fact)}`,
+    `Question: ${buildDefinitionQuestion(fact, questionStyle)}`,
     `A. ${options[0]}`,
     `B. ${options[1]}`,
     `C. ${options[2]}`,
@@ -224,14 +244,15 @@ function buildStatementQuizQuestion(
     return null;
   }
 
+  const correctStatement = getFactStatement(fact);
   const correctIndex = options.findIndex(
-    (option) => normalizeOption(option) === normalizeOption(fact.term)
+    (option) => normalizeOption(option) === normalizeOption(correctStatement)
   );
   const answerLetter = String.fromCharCode(65 + Math.max(0, correctIndex));
-  const correctOption = options[Math.max(0, correctIndex)] ?? fact.term;
+  const correctOption = options[Math.max(0, correctIndex)] ?? correctStatement;
 
   return [
-    'Question: Which statement is true based on the lesson?',
+    'Question: Which statement is true?',
     `A. ${options[0]}`,
     `B. ${options[1]}`,
     `C. ${options[2]}`,
@@ -241,11 +262,78 @@ function buildStatementQuizQuestion(
   ].join('\n');
 }
 
-function buildDefinitionQuestion(fact: LessonFact) {
-  const detail = fact.detail.replace(/_____+/g, 'this idea');
-  const prompt = detail.charAt(0).toUpperCase() + detail.slice(1);
+function buildDetailQuizQuestion(
+  fact: LessonFact,
+  allFacts: LessonFact[],
+  index: number
+) {
+  const correctStatement = getFactStatement(fact);
+  const distractors = allFacts
+    .filter((item) => normalizeOption(getFactStatement(item)) !== normalizeOption(correctStatement))
+    .map(getFactStatement);
+  const options = uniqueByNormalized([
+    correctStatement,
+    ...rotateItems(distractors, index).slice(0, 3),
+  ]).slice(0, 4);
 
-  return `Which word matches this meaning: ${shortText(prompt, 130)}?`;
+  if (options.length < 4) {
+    return null;
+  }
+
+  const shuffledOptions = rotateItems(options, index).slice(0, 4);
+  const correctIndex = shuffledOptions.findIndex(
+    (option) => normalizeOption(option) === normalizeOption(correctStatement)
+  );
+  const answerLetter = String.fromCharCode(65 + Math.max(0, correctIndex));
+  const correctOption = shuffledOptions[Math.max(0, correctIndex)] ?? correctStatement;
+  const prompt = fact.kind === 'statement'
+    ? 'Which statement is true?'
+    : `Which statement best explains ${fact.term}?`;
+
+  return [
+    `Question: ${prompt}`,
+    `A. ${shuffledOptions[0]}`,
+    `B. ${shuffledOptions[1]}`,
+    `C. ${shuffledOptions[2]}`,
+    `D. ${shuffledOptions[3]}`,
+    `Correct answer: ${answerLetter}. ${correctOption}`,
+    `Explanation: ${shortText(correctOption, 170)}`,
+  ].join('\n');
+}
+
+function buildDefinitionQuestion(
+  fact: LessonFact,
+  questionStyle: QuizQuestionStyle
+) {
+  const clue = cleanQuestionClue(fact.detail.replace(/_____+/g, fact.term));
+
+  if (!clue) {
+    return `What is ${fact.term}?`;
+  }
+
+  const calledQuestion = buildCalledTermQuestion(clue, fact.term);
+
+  if (calledQuestion) {
+    return calledQuestion;
+  }
+
+  if (/^(like|such as|for example)\b/i.test(clue)) {
+    return `Which answer includes ${formatQuestionEnding(clue.replace(/^(like|such as|for example)\b[:,]?\s*/i, ''))}`;
+  }
+
+  if (/^(a|an|the)\b/i.test(clue)) {
+    return `What is ${formatQuestionEnding(clue)}`;
+  }
+
+  if (questionStyle === 'meaning') {
+    return `Which answer means ${formatQuestionEnding(clue)}`;
+  }
+
+  if (questionStyle === 'term') {
+    return `Which term is described by ${formatQuestionEnding(clue)}`;
+  }
+
+  return `What matches ${formatQuestionEnding(clue)}`;
 }
 
 function buildFillBlankQuestion(fact: LessonFact) {
@@ -254,6 +342,18 @@ function buildFillBlankQuestion(fact: LessonFact) {
   }
 
   return `_____ means ${shortText(fact.detail, 135)}`;
+}
+
+function buildCalledTermQuestion(clue: string, term: string) {
+  const match = clue.match(
+    new RegExp(`^(.+?)\\s+(?:is|are)\\s+called\\s+${escapeRegExp(term)}$`, 'i')
+  );
+
+  if (!match) {
+    return null;
+  }
+
+  return `What is ${formatQuestionSubject(match[1])} called?`;
 }
 
 function buildUniqueOptions(
@@ -282,15 +382,116 @@ function buildStatementOptions(
   index: number
 ) {
   const distractors = allFacts
-    .filter((item) => item.kind === 'statement')
-    .map((item) => item.term)
-    .filter((term) => normalizeOption(term) !== normalizeOption(fact.term));
+    .map(getFactStatement)
+    .filter((statement) => normalizeOption(statement) !== normalizeOption(getFactStatement(fact)));
   const options = uniqueByNormalized([
-    fact.term,
+    getFactStatement(fact),
     ...rotateItems(distractors, index).slice(0, 3),
   ]).slice(0, 4);
 
   return rotateItems(options, index).slice(0, 4);
+}
+
+function getFactStatement(fact: LessonFact) {
+  if (fact.kind === 'statement') {
+    return cleanAnswerOption(shortText(fact.term, 150));
+  }
+
+  return cleanAnswerOption(shortText(fact.detail.replace(/_____+/g, fact.term), 150));
+}
+
+function cleanQuestionClue(value: string) {
+  return shortText(value, 120)
+    .replace(/\s+/g, ' ')
+    .replace(/^(is|are|means|refers to|describes)\s+/i, '')
+    .replace(/\b(?:in|on|at|from)\s+(?:the\s+)?page\s*\d{1,4}\b/gi, '')
+    .replace(/\bpage\s*\d{1,4}\b/gi, '')
+    .replace(/\b(?:according to|based on)\s+(?:the\s+)?(?:lesson|pdf|source|book|text)\b[:,]?\s*/gi, '')
+    .replace(/\b(?:this|the)\s+(?:lesson|pdf|source|book|text)\s+(?:says|states|explains|shows)\s+that\s+/gi, '')
+    .replace(/\b(?:this|the)\s+(?:lesson|pdf|source|book|text)\b/gi, 'this topic')
+    .replace(/[.?!]+$/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function formatQuestionEnding(value: string) {
+  const cleanValue = value
+    .replace(/\s+/g, ' ')
+    .replace(/[.?!]+$/g, '')
+    .trim();
+
+  if (!cleanValue) {
+    return 'this idea?';
+  }
+
+  return `${lowercaseFirst(cleanValue)}?`;
+}
+
+function formatQuestionSubject(value: string) {
+  const cleanValue = value
+    .replace(/\s+/g, ' ')
+    .replace(/[.?!]+$/g, '')
+    .trim();
+
+  return cleanValue ? lowercaseFirst(cleanValue) : 'this idea';
+}
+
+function cleanAnswerOption(value: string) {
+  const cleanValue = value
+    .replace(/\s+/g, ' ')
+    .replace(/[.?!]+$/g, '')
+    .trim();
+  const words = cleanValue.split(/\s+/).filter(Boolean);
+
+  if (words.length > 3) {
+    return sentenceCase(cleanValue);
+  }
+
+  return cleanStudyTerm(cleanValue);
+}
+
+function buildQuizQuestionStyles(totalQuestions: number, variant: number) {
+  if (totalQuestions <= 0) {
+    return [];
+  }
+
+  const meaningCount = Math.max(1, Math.round(totalQuestions * meaningQuestionRatio));
+  const styles = Array.from<QuizQuestionStyle>({ length: totalQuestions }).fill('direct');
+  const spacing = Math.max(1, Math.floor(totalQuestions / meaningCount));
+
+  for (let count = 0; count < meaningCount; count += 1) {
+    const position = (variant + count * spacing) % totalQuestions;
+    styles[position] = 'meaning';
+  }
+
+  return styles.map((style, index) => {
+    if (style === 'meaning') {
+      return style;
+    }
+
+    return (index + variant) % 2 === 0 ? 'term' : 'direct';
+  });
+}
+
+function sentenceCase(value: string) {
+  const lower = value
+    .split(/\s+/)
+    .map((word) => word.length <= 3 && word === word.toUpperCase() ? word : word.toLowerCase())
+    .join(' ');
+
+  return `${lower.charAt(0).toUpperCase()}${lower.slice(1)}`;
+}
+
+function lowercaseFirst(value: string) {
+  if (!value) {
+    return value;
+  }
+
+  return `${value.charAt(0).toLowerCase()}${value.slice(1)}`;
+}
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function rotateItems<T>(items: T[], offset: number) {
@@ -307,7 +508,7 @@ function uniqueByNormalized(items: string[]) {
   const unique: string[] = [];
 
   for (const item of items) {
-    const cleanItem = cleanStudyTerm(item);
+    const cleanItem = cleanAnswerOption(item);
     const key = normalizeOption(cleanItem);
 
     if (!key || seen.has(key)) {

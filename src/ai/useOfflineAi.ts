@@ -37,14 +37,21 @@ export function useOfflineAi(_bookId?: string, _bookTitle?: string) {
   });
 
   const embedLessonText = async (): Promise<Float32Array | null> => null;
+  const prepareAnswerHelper = () => {};
+  const stopActiveGeneration = async () => true;
+  const hasActiveGeneration = () => false;
 
   return {
     answerQuestion,
     generateStudyTool,
+    prepareAnswerHelper,
+    stopActiveGeneration,
+    hasActiveGeneration,
     embedLessonText,
     embeddingModelName: 'distiluse-base-multilingual-cased-v2-8da4w-chunk100-noprefix-v2',
     isAvailable: false,
     hasCheckedDownload: true,
+    isAnswerHelperPrepared: false,
     shouldLoadModel: false,
     isModelReady: false,
     isEmbeddingReady: false,

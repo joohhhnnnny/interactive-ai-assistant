@@ -842,8 +842,6 @@ export async function listSourcesWithProcessingByBook(
                AND NOT EXISTS (
                  SELECT 1
                  FROM source_chunks
-                 INNER JOIN chunk_embeddings
-                   ON chunk_embeddings.chunk_id = source_chunks.id
                  WHERE source_chunks.source_id = sources.id
                  LIMIT 1
                )
@@ -855,8 +853,6 @@ export async function listSourcesWithProcessingByBook(
                AND NOT EXISTS (
                  SELECT 1
                  FROM source_chunks
-                 INNER JOIN chunk_embeddings
-                   ON chunk_embeddings.chunk_id = source_chunks.id
                  WHERE source_chunks.source_id = sources.id
                  LIMIT 1
                )
@@ -1513,10 +1509,15 @@ export async function searchChunksByText(
     return [];
   }
 
+  const matchExpression = terms
+    .map(() => 'CASE WHEN LOWER(source_chunks.text) LIKE ? THEN 1 ELSE 0 END')
+    .join(' + ');
   const whereClause = terms.map(() => 'LOWER(source_chunks.text) LIKE ?').join(' OR ');
+  const termParameters = terms.map((term) => `%${term.toLowerCase()}%`);
   const parameters = [
+    ...termParameters,
     numericId,
-    ...terms.map((term) => `%${term.toLowerCase()}%`),
+    ...termParameters,
     limit,
   ];
   const rows = await database.getAllAsync<ChunkRow>(
@@ -1528,11 +1529,12 @@ export async function searchChunksByText(
             source_chunks.text,
             source_chunks.token_estimate,
             source_chunks.created_at,
-            sources.filename AS source_name
+            sources.filename AS source_name,
+            (${matchExpression}) AS match_score
      FROM source_chunks
      INNER JOIN sources ON sources.id = source_chunks.source_id
      WHERE source_chunks.book_id = ? AND (${whereClause})
-     ORDER BY source_chunks.chunk_index ASC
+     ORDER BY match_score DESC, source_chunks.chunk_index ASC
      LIMIT ?`,
     ...parameters
   );
