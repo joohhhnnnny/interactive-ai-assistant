@@ -6,6 +6,7 @@ import {
 import {
   RnExecutorchErrorCode,
   isAvailable,
+  useTextEmbeddings,
 } from 'react-native-executorch';
 import { getAppSetting, saveAppSetting } from '../data/database';
 import {
@@ -16,6 +17,7 @@ import {
   downloadOfflineAnswerModelResources,
   downloadOfflineSearchModelResources,
   getOfflineModelDeviceWarning,
+  offlineEmbeddingModel,
   modelDownloadedKey,
   modelDownloadInProgressKey,
   modelProfileKey,
@@ -28,10 +30,13 @@ import {
 
 const keepAwakeTag = 'alab-offline-model-download';
 let isStudyHelperDownloadInFlight = false;
-type DownloadStage = 'search' | 'answer';
+type DownloadStage = 'search' | 'search-runtime' | 'answer';
 
 export function useOfflineStudyHelperStatus() {
   const [isChecking, setIsChecking] = useState(true);
+  const [hasSearchFiles, setHasSearchFiles] = useState(false);
+  const [hasAnswerFiles, setHasAnswerFiles] = useState(false);
+  const [shouldLoadSearchRuntime, setShouldLoadSearchRuntime] = useState(false);
   const [isSearchReady, setIsSearchReady] = useState(false);
   const [isReady, setIsReady] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
@@ -42,6 +47,67 @@ export function useOfflineStudyHelperStatus() {
   const [recoveryMessage, setRecoveryMessage] = useState<string | null>(null);
   const [deviceWarning] = useState(() => getOfflineModelDeviceWarning());
   const activeAttemptRef = useRef(0);
+  const searchRuntimeReadyRef = useRef(false);
+  const searchRuntimeErrorRef = useRef<unknown>(null);
+  const searchEmbeddings = useTextEmbeddings({
+    model: offlineEmbeddingModel,
+    preventLoad: !shouldLoadSearchRuntime,
+  });
+  const isSearchRuntimeLoading =
+    hasSearchFiles &&
+    shouldLoadSearchRuntime &&
+    !searchEmbeddings.isReady &&
+    !searchEmbeddings.error;
+  const shouldKeepAwakeForStudyHelper =
+    isLoading || (isSearchRuntimeLoading && !hasAnswerFiles);
+
+  useEffect(() => {
+    searchRuntimeReadyRef.current = searchEmbeddings.isReady;
+    searchRuntimeErrorRef.current = searchEmbeddings.error ?? null;
+
+    if (searchEmbeddings.isReady) {
+      setIsSearchReady(true);
+      if (hasAnswerFiles) {
+        setIsReady(true);
+        setStatusMessage('Study helper is ready.');
+      }
+      setFailureDetail(null);
+      return;
+    }
+
+    if (shouldLoadSearchRuntime && searchEmbeddings.error) {
+      setFailureDetail(getSearchRuntimeFailureDetail(searchEmbeddings.error));
+      setRecoveryMessage(
+        'Lesson search files are saved, but ALAB could not start lesson search. Close other apps and prepare it again.'
+      );
+    }
+  }, [
+    hasAnswerFiles,
+    searchEmbeddings.error,
+    searchEmbeddings.isReady,
+    shouldLoadSearchRuntime,
+  ]);
+
+  useEffect(() => {
+    if (
+      !isLoading &&
+      hasSearchFiles &&
+      !hasAnswerFiles &&
+      shouldLoadSearchRuntime &&
+      !searchEmbeddings.isReady &&
+      !searchEmbeddings.error
+    ) {
+      setProgress((current) => Math.max(current, 45));
+      setStatusMessage('Starting lesson search...');
+    }
+  }, [
+    hasSearchFiles,
+    hasAnswerFiles,
+    isLoading,
+    searchEmbeddings.error,
+    searchEmbeddings.isReady,
+    shouldLoadSearchRuntime,
+  ]);
 
   useEffect(() => {
     let isActive = true;
@@ -66,20 +132,32 @@ export function useOfflineStudyHelperStatus() {
           return;
         }
 
-        if (downloadedValue === 'true' && profileValue === offlineModelProfile) {
-          setIsSearchReady(true);
-          setIsReady(true);
+        const hasFullStudyHelper =
+          downloadedValue === 'true' && profileValue === offlineModelProfile;
+        const hasSearchHelper =
+          searchDownloadedValue === 'true' &&
+          searchProfileValue === offlineSearchModelProfile;
+
+        if (hasFullStudyHelper) {
           await saveAppSetting(searchModelDownloadedKey, 'true');
           await saveAppSetting(searchModelDownloadInProgressKey, 'false');
           await saveAppSetting(searchModelProfileKey, offlineSearchModelProfile);
+          setHasSearchFiles(true);
+          setHasAnswerFiles(true);
+          setIsSearchReady(true);
+          setIsReady(true);
+          setProgress(100);
+          setShouldLoadSearchRuntime(true);
+          setStatusMessage('Study helper is ready.');
           return;
         }
 
-        if (
-          searchDownloadedValue === 'true' &&
-          searchProfileValue === offlineSearchModelProfile
-        ) {
+        if (hasSearchHelper) {
+          setHasSearchFiles(true);
           setIsSearchReady(true);
+          setProgress((current) => Math.max(current, 45));
+          setShouldLoadSearchRuntime(true);
+          setStatusMessage('Lesson search is ready.');
         }
 
         if (
@@ -154,7 +232,7 @@ export function useOfflineStudyHelperStatus() {
   }, []);
 
   useEffect(() => {
-    if (!isLoading) {
+    if (!shouldKeepAwakeForStudyHelper) {
       deactivateKeepAwake(keepAwakeTag).catch(() => {});
       return;
     }
@@ -164,7 +242,26 @@ export function useOfflineStudyHelperStatus() {
     return () => {
       deactivateKeepAwake(keepAwakeTag).catch(() => {});
     };
-  }, [isLoading]);
+  }, [shouldKeepAwakeForStudyHelper]);
+
+  const waitForSearchRuntimeReady = useCallback(async () => {
+    const startedAt = Date.now();
+    const timeoutMs = 45000;
+
+    while (Date.now() - startedAt < timeoutMs) {
+      if (searchRuntimeReadyRef.current) {
+        return true;
+      }
+
+      if (searchRuntimeErrorRef.current) {
+        throw searchRuntimeErrorRef.current;
+      }
+
+      await delay(150);
+    }
+
+    return false;
+  }, []);
 
   const startDownload = useCallback(async () => {
     if (deviceWarning) {
@@ -195,7 +292,7 @@ export function useOfflineStudyHelperStatus() {
     let stage: DownloadStage = 'search';
 
     try {
-      if (!isSearchReady) {
+      if (!hasSearchFiles) {
         await saveAppSetting(searchModelDownloadedKey, 'false');
         await saveAppSetting(searchModelDownloadInProgressKey, 'true');
         await downloadOfflineSearchModelResources((status) => {
@@ -214,15 +311,32 @@ export function useOfflineStudyHelperStatus() {
         await saveAppSetting(searchModelDownloadedKey, 'true');
         await saveAppSetting(searchModelDownloadInProgressKey, 'false');
         await saveAppSetting(searchModelProfileKey, offlineSearchModelProfile);
-        setIsSearchReady(true);
+        setHasSearchFiles(true);
         setProgress(45);
-        setStatusMessage('Lesson search is ready. Preparing study helper...');
+        setStatusMessage('Starting lesson search...');
       } else {
         setProgress(45);
-        setStatusMessage('Lesson search is ready. Preparing study helper...');
+        setStatusMessage(
+          isSearchReady
+            ? 'Lesson search is ready. Preparing study helper...'
+            : 'Starting lesson search...'
+        );
+      }
+
+      if (!isSearchReady) {
+        stage = 'search-runtime';
+        setShouldLoadSearchRuntime(true);
+
+        const searchRuntimeStarted = await waitForSearchRuntimeReady();
+
+        if (!searchRuntimeStarted) {
+          throw new Error('Lesson search took too long to start.');
+        }
       }
 
       stage = 'answer';
+      setIsSearchReady(true);
+      setStatusMessage('Lesson search is ready. Preparing study helper...');
       await saveAppSetting(modelDownloadedKey, 'false');
       await saveAppSetting(modelDownloadInProgressKey, 'true');
       await downloadOfflineAnswerModelResources((status) => {
@@ -242,6 +356,7 @@ export function useOfflineStudyHelperStatus() {
       await saveAppSetting(modelDownloadInProgressKey, 'false');
       await saveAppSetting(modelProfileKey, offlineModelProfile);
 
+      setHasAnswerFiles(true);
       setProgress(100);
       setIsReady(true);
       setStatusMessage('Study helper is ready.');
@@ -282,15 +397,22 @@ export function useOfflineStudyHelperStatus() {
       }
       isStudyHelperDownloadInFlight = false;
     }
-  }, [deviceWarning, isSearchReady]);
+  }, [
+    deviceWarning,
+    hasSearchFiles,
+    isSearchReady,
+    waitForSearchRuntimeReady,
+  ]);
 
   return {
     isAvailable,
     isChecking,
     isSearchReady,
     isReady,
-    isLoading,
-    progress,
+    isLoading: isLoading || (isSearchRuntimeLoading && !hasAnswerFiles),
+    progress: isSearchRuntimeLoading && !hasAnswerFiles
+      ? Math.max(progress, 45)
+      : progress,
     error,
     statusMessage,
     failureDetail,
@@ -325,7 +447,7 @@ function getErrorMessage(error: unknown) {
 }
 
 function getRecoveryMessage(error: unknown, stage: DownloadStage) {
-  const helperName = stage === 'search' ? 'lesson search' : 'study helper';
+  const helperName = stage === 'answer' ? 'study helper' : 'lesson search';
 
   if (isUnauthorizedDownload(error)) {
     return `The ${helperName} download was blocked. This is not a PDF problem.`;
@@ -339,6 +461,10 @@ function getRecoveryMessage(error: unknown, stage: DownloadStage) {
     return 'Lesson search is ready. The study helper download did not finish, so PDFs can still be prepared while you retry.';
   }
 
+  if (stage === 'search-runtime') {
+    return 'Lesson search files are saved, but ALAB could not start lesson search. Close other apps and prepare it again.';
+  }
+
   if (isDownloadError(error)) {
     return `The ${helperName} download did not finish. Check the detail below, then try again.`;
   }
@@ -349,7 +475,7 @@ function getRecoveryMessage(error: unknown, stage: DownloadStage) {
 function getFailureDetail(error: unknown, stage: DownloadStage) {
   const code = getErrorCode(error);
   const message = getErrorMessage(error);
-  const helperName = stage === 'search' ? 'lesson search files' : 'study helper files';
+  const helperName = stage === 'answer' ? 'study helper files' : 'lesson search files';
 
   if (isUnauthorizedDownload(error)) {
     return code
@@ -373,4 +499,18 @@ function isUnauthorizedDownload(error: unknown) {
     getErrorCode(error) === RnExecutorchErrorCode.ResourceFetcherDownloadFailed &&
     getErrorMessage(error).includes('status: 401')
   );
+}
+
+function getSearchRuntimeFailureDetail(error: unknown) {
+  const message = getErrorMessage(error);
+
+  return message
+    ? `Lesson search files were downloaded, but the lesson-search runtime could not start: ${message}`
+    : 'Lesson search files were downloaded, but the lesson-search runtime could not start.';
+}
+
+function delay(ms: number) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 }

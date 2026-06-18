@@ -48,6 +48,7 @@
     "typescript": "~6.0.3"
   },
   "scripts": {
+    "postinstall": "node ./scripts/patch-react-native-gradle-plugin.js",
     "start": "expo start",
     "reset-project": "node ./scripts/reset-project.js",
     "android": "bash ./scripts/run-android.sh",

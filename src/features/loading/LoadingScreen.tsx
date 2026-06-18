@@ -77,7 +77,7 @@ export function LoadingScreen({ onComplete }: LoadingScreenProps) {
 
           <Text style={styles.appName}>ALAB</Text>
           <Text style={styles.tagline}>Your Study Companion</Text>
-          <Text style={styles.version}>v2026-06-17-3</Text>
+          <Text style={styles.version}>v2026-06-18-7</Text>
         </View>
 
         <View style={styles.progressArea}>
