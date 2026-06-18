@@ -8,9 +8,18 @@ export const styles = StyleSheet.create({
     flex: 1,
   },
   chatContent: {
+    flexGrow: 1,
+    justifyContent: 'flex-end',
     paddingHorizontal: 20,
     paddingTop: 24,
-    paddingBottom: 80,
+    paddingBottom: 12,
+  },
+  chatContentKeyboardFocused: {
+    justifyContent: 'flex-start',
+    paddingBottom: 16,
+  },
+  keyboardScrollSpacer: {
+    height: 156,
   },
   tabletTabContent: {
     width: '100%',
@@ -195,7 +204,7 @@ export const styles = StyleSheet.create({
     paddingBottom: 4,
     backgroundColor: '#f9f9f9',
   },
-  chatInputSticky: {
+  chatInputDock: {
     width: '100%',
   },
   studyPanel: {

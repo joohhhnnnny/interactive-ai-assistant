@@ -122,6 +122,14 @@ export type EmbeddedSourceChunk = SourceChunk & {
   embedding: number[] | null;
 };
 
+export type SourceVectorIndexStatus = {
+  sourceId: string;
+  chunkCount: number;
+  embeddingCount: number;
+  isSearchable: boolean;
+  isFullyEmbedded: boolean;
+};
+
 export type StoredChatMessage = {
   id: string;
   role: 'user' | 'ai';
@@ -1335,6 +1343,71 @@ export async function saveChunkEmbedding(
     embeddingJson,
     now
   );
+}
+
+export async function deleteSourceEmbeddings(sourceId: string) {
+  await initializeDatabase();
+
+  const numericSourceId = Number(sourceId);
+
+  if (!Number.isFinite(numericSourceId)) {
+    return;
+  }
+
+  const database = await getDatabase();
+  await database.runAsync(
+    `DELETE FROM chunk_embeddings
+     WHERE chunk_id IN (
+       SELECT id FROM source_chunks WHERE source_id = ?
+     )`,
+    numericSourceId
+  );
+}
+
+export async function getSourceVectorIndexStatus(
+  sourceId: string,
+  modelName?: string
+): Promise<SourceVectorIndexStatus> {
+  await initializeDatabase();
+
+  const numericSourceId = Number(sourceId);
+
+  if (!Number.isFinite(numericSourceId)) {
+    return {
+      sourceId,
+      chunkCount: 0,
+      embeddingCount: 0,
+      isSearchable: false,
+      isFullyEmbedded: false,
+    };
+  }
+
+  const database = await getDatabase();
+  const row = await database.getFirstAsync<{
+    chunk_count: number;
+    embedding_count: number;
+  }>(
+    `SELECT COUNT(source_chunks.id) AS chunk_count,
+            COUNT(chunk_embeddings.chunk_id) AS embedding_count
+     FROM source_chunks
+     LEFT JOIN chunk_embeddings
+       ON chunk_embeddings.chunk_id = source_chunks.id
+      AND (? IS NULL OR chunk_embeddings.model_name = ?)
+     WHERE source_chunks.source_id = ?`,
+    modelName ?? null,
+    modelName ?? null,
+    numericSourceId
+  );
+  const chunkCount = row?.chunk_count ?? 0;
+  const embeddingCount = row?.embedding_count ?? 0;
+
+  return {
+    sourceId,
+    chunkCount,
+    embeddingCount,
+    isSearchable: chunkCount > 0,
+    isFullyEmbedded: chunkCount > 0 && embeddingCount === chunkCount,
+  };
 }
 
 export async function listEmbeddedChunksByBook(

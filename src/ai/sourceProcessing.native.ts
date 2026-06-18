@@ -6,10 +6,10 @@ import {
 import {
   replaceSourceChunks,
   replaceSourcePages,
-  saveChunkEmbedding,
   upsertSourceProcessingJob,
 } from '../data/database';
 import type { SourceProcessingStatus } from '../data/database';
+import { indexSourceChunks } from './rag/vector-store/store';
 import { cleanStudentReadableText } from './textCleanup';
 
 const maxWordsPerChunk = 100;
@@ -302,32 +302,25 @@ export async function processSourcePdfPlaceholder(
     if (options) {
       await setStatus('embedding');
 
-      for (const [index, chunk] of savedChunks.entries()) {
-        setProgress({
-          phase: 'embedding',
-          message: `Preparing lesson search ${index + 1} of ${savedChunks.length}...`,
-          percent: Math.min(
-            96,
-            Math.round(65 + ((index + 1) / savedChunks.length) * 30)
-          ),
-          current: index + 1,
-          total: savedChunks.length,
-        });
+      const indexStatus = await indexSourceChunks(sourceId, savedChunks, {
+        embedText: options.embedText,
+        modelName: options.modelName,
+        onIndexedChunk: (current, total) => {
+          setProgress({
+            phase: 'embedding',
+            message: `Preparing lesson search ${current} of ${total}...`,
+            percent: Math.min(
+              96,
+              Math.round(65 + (current / total) * 30)
+            ),
+            current,
+            total,
+          });
+        },
+      });
 
-        const embedding = await options.embedText(chunk.text);
-
-        if (!embedding) {
-          indexingWasSkipped = true;
-          break;
-        }
-
-        await saveChunkEmbedding(
-          chunk.id,
-          options.modelName,
-          embedding
-        );
-        savedEmbeddingCount += 1;
-      }
+      savedEmbeddingCount = indexStatus.embeddingCount;
+      indexingWasSkipped = !indexStatus.isFullyEmbedded;
     }
 
     if (indexingWasSkipped || savedEmbeddingCount !== savedChunks.length) {

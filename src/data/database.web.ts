@@ -182,6 +182,14 @@ export type EmbeddedSourceChunk = SourceChunk & {
   embedding: number[] | null;
 };
 
+export type SourceVectorIndexStatus = {
+  sourceId: string;
+  chunkCount: number;
+  embeddingCount: number;
+  isSearchable: boolean;
+  isFullyEmbedded: boolean;
+};
+
 export type StoredChatMessage = {
   id: string;
   role: 'user' | 'ai';
@@ -1205,6 +1213,63 @@ export async function saveChunkEmbedding(
   }
 
   writeState(state);
+}
+
+export async function deleteSourceEmbeddings(sourceId: string) {
+  await initializeDatabase();
+
+  const numericSourceId = Number(sourceId);
+
+  if (!Number.isFinite(numericSourceId)) {
+    return;
+  }
+
+  const state = readState();
+  const sourceChunkIds = state.chunks
+    .filter((chunk) => chunk.sourceId === numericSourceId)
+    .map((chunk) => chunk.id);
+
+  state.embeddings = state.embeddings.filter(
+    (embedding) => !sourceChunkIds.includes(embedding.chunkId)
+  );
+
+  writeState(state);
+}
+
+export async function getSourceVectorIndexStatus(
+  sourceId: string,
+  modelName?: string
+): Promise<SourceVectorIndexStatus> {
+  await initializeDatabase();
+
+  const numericSourceId = Number(sourceId);
+
+  if (!Number.isFinite(numericSourceId)) {
+    return {
+      sourceId,
+      chunkCount: 0,
+      embeddingCount: 0,
+      isSearchable: false,
+      isFullyEmbedded: false,
+    };
+  }
+
+  const state = readState();
+  const chunks = state.chunks.filter((chunk) => chunk.sourceId === numericSourceId);
+  const chunkIds = chunks.map((chunk) => chunk.id);
+  const embeddingCount = state.embeddings.filter(
+    (embedding) =>
+      chunkIds.includes(embedding.chunkId) &&
+      (!modelName || embedding.modelName === modelName)
+  ).length;
+
+  return {
+    sourceId,
+    chunkCount: chunks.length,
+    embeddingCount,
+    isSearchable: chunks.length > 0,
+    isFullyEmbedded: chunks.length > 0 && embeddingCount === chunks.length,
+  };
 }
 
 export async function listEmbeddedChunksByBook(

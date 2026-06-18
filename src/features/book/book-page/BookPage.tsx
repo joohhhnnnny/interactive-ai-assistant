@@ -24,7 +24,7 @@ export function BookPage({ book, onBack }: BookPageProps) {
   const [pendingPrompt, setPendingPrompt] = useState<PendingChatPrompt | null>(
     null
   );
-  const [, setIsChatComposerFocused] = useState(false);
+  const [isChatComposerFocused, setIsChatComposerFocused] = useState(false);
   const [studyReadiness, setStudyReadiness] = useState<StudyReadiness>({
     isChecking: true,
     hasReadyChunks: false,
@@ -145,7 +145,9 @@ export function BookPage({ book, onBack }: BookPageProps) {
         </View>
       </View>
 
-      <BookBottomNav activeTab={activeTab} onTabChange={handleTabChange} />
+      {activeTab === 'chat' && isChatComposerFocused ? null : (
+        <BookBottomNav activeTab={activeTab} onTabChange={handleTabChange} />
+      )}
     </Screen>
   );
 }

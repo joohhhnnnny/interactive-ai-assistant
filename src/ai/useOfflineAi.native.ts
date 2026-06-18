@@ -29,17 +29,31 @@ import {
 import {
   buildGeneralMessages,
   buildGroundedMessages,
+  buildStudyToolMessages,
   formatSourceLabel,
   retrieveBookOverviewChunks,
   retrieveRelevantChunksWithMetadata,
   retrieveStudyToolChunks,
 } from './retrieval';
 import {
-  cleanLessonText,
   formatGeneralOutput,
   formatStudentOutput,
-  splitReadableSentences,
 } from './textCleanup';
+import {
+  buildPdfSummary,
+  buildQuickGroundedAnswer,
+  getAnswerIntent,
+  isBadGroundedAnswer,
+} from './rag/agent/answers';
+import {
+  buildSimpleStudyToolFallback,
+  countFlashcards,
+  countValidMcqQuestions,
+  getStudyToolItemCount,
+  hasValidMcqQuiz,
+  normalizeStudyToolOutput,
+  StudyToolMode,
+} from './rag/agent/studyTools';
 
 type OfflineAiResponse = {
   text: string;
@@ -48,8 +62,6 @@ type OfflineAiResponse = {
   confidence?: AiAnswerConfidence;
   metrics?: OfflineAiMetrics;
 };
-
-export type StudyToolMode = 'mcq' | 'fill_blank' | 'essay';
 
 type OfflineAiMetrics = {
   retrievalMs?: number;
@@ -60,12 +72,8 @@ type OfflineAiMetrics = {
   fallbackReason?: string | null;
 };
 
-type AnswerIntent = 'general' | 'grounded' | 'summary';
-
 const heavyAnswerTimeoutMs = 30000;
-const quizItemCount = 10;
-const maxQuizItemCount = 50;
-const flashcardItemCount = 20;
+const studyToolGenerationTimeoutMs = 45000;
 const generationConfig = {
   temperature: 0.2,
   topP: 0.82,
@@ -130,7 +138,10 @@ export function useOfflineAi(bookId: string, bookTitle: string) {
   }, []);
 
   const answerQuestion = useCallback(
-    async (question: string): Promise<OfflineAiResponse> => {
+    async (
+      question: string,
+      conversationContext?: string
+    ): Promise<OfflineAiResponse> => {
       const startedAt = Date.now();
       const makeResponse = async ({
         text,
@@ -289,7 +300,9 @@ export function useOfflineAi(bookId: string, bookTitle: string) {
 
         const generationStartedAt = Date.now();
         const answer = await withTimeout(
-          llm.generate(buildGeneralMessages(question) as Message[]),
+          llm.generate(
+            buildGeneralMessages(question, conversationContext) as Message[]
+          ),
           heavyAnswerTimeoutMs,
           '',
           llm.interrupt
@@ -389,7 +402,9 @@ export function useOfflineAi(bookId: string, bookTitle: string) {
 
       const generationStartedAt = Date.now();
       const answer = await withTimeout(
-        llm.generate(buildGroundedMessages(question, chunks) as Message[]),
+        llm.generate(
+          buildGroundedMessages(question, chunks, conversationContext) as Message[]
+        ),
         heavyAnswerTimeoutMs,
         '',
         llm.interrupt
@@ -429,7 +444,8 @@ export function useOfflineAi(bookId: string, bookTitle: string) {
     async (
       tool: 'quiz' | 'flashcards',
       mode: StudyToolMode = 'mcq',
-      requestedCount?: number
+      requestedCount?: number,
+      conversationContext?: string
     ): Promise<OfflineAiResponse> => {
       const startedAt = Date.now();
       const makeStudyResponse = async ({
@@ -437,6 +453,7 @@ export function useOfflineAi(bookId: string, bookTitle: string) {
         sources = [],
         confidence = 'none',
         retrievalMs,
+        generationMs,
         topScore = null,
         fallbackReason = null,
       }: {
@@ -444,11 +461,13 @@ export function useOfflineAi(bookId: string, bookTitle: string) {
         sources?: string[];
         confidence?: AiAnswerConfidence;
         retrievalMs?: number;
+        generationMs?: number;
         topScore?: number | null;
         fallbackReason?: string | null;
       }): Promise<OfflineAiResponse> => {
         const metrics: OfflineAiMetrics = {
           retrievalMs,
+          generationMs,
           totalMs: Date.now() - startedAt,
           sourceCount: sources.length,
           topScore,
@@ -461,6 +480,7 @@ export function useOfflineAi(bookId: string, bookTitle: string) {
             answerMode: sources.length > 0 ? 'study_tool' : 'status',
             confidence,
             retrievalMs,
+            generationMs,
             totalMs: metrics.totalMs,
             sourceCount: sources.length,
             topScore,
@@ -522,14 +542,60 @@ export function useOfflineAi(bookId: string, bookTitle: string) {
         });
       }
 
-      const toolText = buildSimpleStudyToolFallback(tool, chunks, mode, itemCount);
+      const toolText = buildSimpleStudyToolFallback(
+        tool,
+        chunks,
+        mode,
+        itemCount,
+        getConversationVariant(conversationContext)
+      );
+      const sources = chunks.map(formatSourceLabel);
+      let finalToolText = toolText;
+      let generationMs: number | undefined;
+      let fallbackReason: string | null = hasAnswerHelperPrepared
+        ? null
+        : 'study_tool_local_fallback_answer_helper_not_prepared';
 
-      if (tool === 'quiz' && mode === 'mcq' && !hasValidMcqQuiz(toolText)) {
+      if (hasAnswerHelperPrepared && llm.error) {
+        fallbackReason = 'study_tool_local_fallback_llm_error';
+      } else if (hasAnswerHelperPrepared && !shouldLoadLlm) {
+        setShouldLoadLlm(true);
+        fallbackReason = 'study_tool_local_fallback_llm_lazy_loading';
+      } else if (hasAnswerHelperPrepared && !llm.isReady) {
+        fallbackReason = 'study_tool_local_fallback_llm_not_ready';
+      } else if (hasAnswerHelperPrepared && llm.isReady) {
+        llm.configure({ generationConfig });
+
+        const generationStartedAt = Date.now();
+        const generatedText = await withTimeout(
+          llm.generate(
+            buildStudyToolMessages(tool, bookTitle, chunks, {
+              itemCount,
+              mode,
+              conversationContext,
+            }) as Message[]
+          ),
+          studyToolGenerationTimeoutMs,
+          '',
+          llm.interrupt
+        );
+        generationMs = Date.now() - generationStartedAt;
+        const cleanGeneratedText = normalizeStudyToolOutput(generatedText);
+
+        if (isUsableStudyToolOutput(tool, mode, cleanGeneratedText, itemCount)) {
+          finalToolText = cleanGeneratedText;
+          fallbackReason = null;
+        } else {
+          fallbackReason = 'study_tool_local_fallback_invalid_llm_output';
+        }
+      }
+
+      if (tool === 'quiz' && mode === 'mcq' && !hasValidMcqQuiz(finalToolText)) {
         return makeStudyResponse({
           text: 'ALAB needs a little more readable lesson text before making a multiple-choice quiz. Please try again after the source finishes analyzing.',
           retrievalMs,
           topScore: chunks[0]?.score ?? null,
-          fallbackReason: 'invalid_mcq_quiz',
+          fallbackReason: fallbackReason ?? 'invalid_mcq_quiz',
         });
       }
 
@@ -538,21 +604,32 @@ export function useOfflineAi(bookId: string, bookTitle: string) {
           tool,
           bookId,
           chunks.map((chunk) => chunk.id),
-          toolText
+          finalToolText
         );
       } catch {
         // The generated message is still useful even if study-tool history fails.
       }
 
       return makeStudyResponse({
-        text: toolText,
-        sources: chunks.map(formatSourceLabel),
-        confidence: 'medium',
+        text: finalToolText,
+        sources,
+        confidence: fallbackReason ? 'medium' : 'high',
         retrievalMs,
         topScore: chunks[0]?.score ?? null,
+        fallbackReason,
+        generationMs,
       });
     },
-    [bookId, bookTitle, embeddings, hasCheckedDownload, shouldLoadEmbeddings]
+    [
+      bookId,
+      bookTitle,
+      embeddings,
+      hasAnswerHelperPrepared,
+      hasCheckedDownload,
+      llm,
+      shouldLoadEmbeddings,
+      shouldLoadLlm,
+    ]
   );
 
   const embedLessonText = useCallback(
@@ -587,76 +664,18 @@ export function useOfflineAi(bookId: string, bookTitle: string) {
   };
 }
 
-function hasValidMcqQuiz(text: string) {
-  return text
-    .split(/(?=Question\s*\d*\s*[:.)-])/i)
-    .map((block) => block.trim())
-    .filter((block) => /^question\s*\d*\s*[:.)-]/i.test(block))
-    .some(hasValidMcqBlock);
-}
-
-function hasValidMcqBlock(block: string) {
-  const lines = block
-    .replace(/\r/g, '\n')
-    .split('\n')
-    .map((line) => line.trim())
-    .filter(Boolean);
-  const options = new Map<string, string>();
-
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index];
-    const optionMatch = line.match(/^([A-D])[.)]\s*(.*)$/i);
-
-    if (!optionMatch) {
-      continue;
-    }
-
-    const letter = optionMatch[1].toUpperCase();
-    const inlineText = optionMatch[2].trim();
-    const optionText = inlineText || lines[index + 1]?.trim() || '';
-
-    if (optionText) {
-      options.set(letter, optionText);
-    }
+function getConversationVariant(conversationContext?: string) {
+  if (!conversationContext) {
+    return 0;
   }
 
-  const answerMatch = block.match(
-    /(?:^|\n)Correct\s*answer\s*:\s*([A-D])[.)]?(?:\s+|\n)?([^\n]*)/i
-  );
+  let hash = 0;
 
-  if (options.size < 4 || !answerMatch) {
-    return false;
+  for (let index = 0; index < conversationContext.length; index += 1) {
+    hash = ((hash << 5) - hash + conversationContext.charCodeAt(index)) | 0;
   }
 
-  const answerLetter = answerMatch[1].toUpperCase();
-  const correctOption = options.get(answerLetter);
-  const answerText = answerMatch[2]?.trim() ?? '';
-
-  if (!correctOption) {
-    return false;
-  }
-
-  return (
-    !answerText ||
-    normalizeAnswerText(answerText) === normalizeAnswerText(correctOption) ||
-    normalizeAnswerText(answerText).includes(normalizeAnswerText(correctOption))
-  );
-}
-
-function normalizeAnswerText(value: string) {
-  return value.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
-}
-
-function isBadGroundedAnswer(answer: string) {
-  const normalized = answer.toLowerCase();
-
-  return (
-    normalized.includes('no pdf') ||
-    normalized.includes('pdf included') ||
-    normalized.includes('no document') ||
-    normalized.includes('no file') ||
-    normalized.includes('not provided')
-  );
+  return Math.abs(hash);
 }
 
 async function saveGeneratedStudyTool(
@@ -706,752 +725,23 @@ function withTimeout<T>(
   });
 }
 
-function buildQuickGroundedAnswer(chunks: { text: string }[]) {
-  const snippets = uniqueTexts(
-    chunks
-      .flatMap((chunk) => splitReadableSentences(cleanChunkText(chunk.text)))
-      .filter(isUsefulSentence)
-  );
-  const bestSnippet = snippets[0] ?? chunks
-    .map((chunk) => cleanChunkText(chunk.text))
-    .find(Boolean);
-
-  if (!bestSnippet) {
-    return 'I found a related part in your lesson, but I could not prepare a full answer yet. Please try asking in a simpler way.';
-  }
-
-  const support = snippets.find((snippet) => snippet !== bestSnippet);
-
-  return formatStudentOutput([
-    'I found this lesson idea:',
-    '',
-    shortText(bestSnippet, 190),
-    support ? '' : null,
-    support ? `A helpful detail is: ${shortText(support, 170)}` : null,
-  ].filter(Boolean).join('\n'));
-}
-
-function isSummaryRequest(question: string) {
-  const normalized = question.toLowerCase();
-
-  return (
-    normalized.includes('summarize') ||
-    normalized.includes('summary') ||
-    normalized.includes('sum up') ||
-    normalized.includes('overview') ||
-    normalized.includes('main idea') ||
-    normalized.includes('what is this pdf about') ||
-    normalized.includes('what is the pdf about')
-  );
-}
-
-function getAnswerIntent(question: string, hasSources: boolean): AnswerIntent {
-  if (isSummaryRequest(question)) {
-    return 'summary';
-  }
-
-  if (isExplicitLessonRequest(question)) {
-    return 'grounded';
-  }
-
-  if (isGeneralKnowledgeRequest(question)) {
-    return 'general';
-  }
-
-  return hasSources ? 'grounded' : 'general';
-}
-
-function isExplicitLessonRequest(question: string) {
-  const normalized = question.toLowerCase();
-
-  return (
-    /\b(this|the|my|our)\s+(lesson|book|pdf|source|module|chapter|material|textbook)\b/.test(normalized) ||
-    /\bfrom\s+(the|this|my|our)?\s*(lesson|book|pdf|source|module|chapter|material|textbook)\b/.test(normalized) ||
-    /\baccording to\s+(the|this|my|our)?\s*(lesson|book|pdf|source|module|chapter|material|textbook)\b/.test(normalized) ||
-    normalized.includes('in the uploaded') ||
-    normalized.includes('in your uploaded') ||
-    normalized.includes('based on the lesson') ||
-    normalized.includes('based on my lesson')
-  );
-}
-
-function isGeneralKnowledgeRequest(question: string) {
-  const normalized = question.toLowerCase();
-
-  if (
-    /\b(java|javascript|python|html|css|sql|c\+\+|c#|code|program|function|class|algorithm)\b/.test(normalized) ||
-    /\b(write|create|make|give me|show me)\b.+\b(code|program|example|template|letter|essay|story|sentence|paragraph)\b/.test(normalized) ||
-    /\btranslate\b|\bgrammar\b|\brewrite\b|\bproofread\b/.test(normalized)
-  ) {
-    return true;
-  }
-
-  return /^[\d\s+\-*/().=]+$/.test(normalized.trim());
-}
-
-function cleanChunkText(text: string) {
-  return cleanLessonText(text).replace(/\s+/g, ' ').trim();
-}
-
-function splitSentences(chunks: { text: string }[]) {
-  return chunks
-    .flatMap((chunk) =>
-      splitReadableSentences(cleanChunkText(chunk.text))
-        .map((sentence) => sentence.trim())
-    )
-    .filter(isUsefulSentence);
-}
-
-function shortText(text: string, maxLength: number) {
-  const cleanText = cleanChunkText(text);
-
-  if (cleanText.length <= maxLength) {
-    return cleanText;
-  }
-
-  return `${cleanText.slice(0, maxLength).replace(/\s+\S*$/, '')}...`;
-}
-
-function buildPdfSummary(chunks: { text: string }[]) {
-  const sentences = splitSentences(chunks);
-  const cleanSentences = uniqueTexts(sentences).slice(0, 7);
-  const mainIdea = cleanSentences[0] ?? shortText(chunks[0]?.text ?? '', 180);
-  const bullets = cleanSentences
-    .slice(mainIdea ? 1 : 0, 7)
-    .slice(0, 5)
-    .map((sentence) => `- ${shortText(sentence, 170)}`);
-
-  if (bullets.length === 0) {
-    return formatStudentOutput([
-      'Here is a quick summary of your lesson.',
-      '',
-      'Main idea',
-      shortText(mainIdea, 190),
-    ].join('\n'));
-  }
-
-  return formatStudentOutput([
-    'Here is a quick summary of your lesson.',
-    '',
-    'Main idea',
-    shortText(mainIdea, 190),
-    '',
-    'Important points',
-    ...bullets,
-    '',
-    `Remember this: ${shortText(bullets[0].replace(/^-\s*/, ''), 150)}`,
-  ].join('\n'));
-}
-
-function uniqueTexts(items: string[]) {
-  const seen = new Set<string>();
-  const unique: string[] = [];
-
-  for (const item of items) {
-    const key = item.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
-
-    if (!key || seen.has(key)) {
-      continue;
-    }
-
-    seen.add(key);
-    unique.push(item);
-  }
-
-  return unique;
-}
-
-type LessonFact = {
-  term: string;
-  detail: string;
-  sourceText: string;
-  kind?: 'term' | 'statement';
-};
-
-function buildSimpleStudyToolFallback(
+function isUsableStudyToolOutput(
   tool: 'quiz' | 'flashcards',
-  chunks: { text: string }[],
-  mode: StudyToolMode = 'mcq',
-  itemCount = tool === 'quiz' ? quizItemCount : flashcardItemCount
+  mode: StudyToolMode,
+  text: string,
+  targetCount: number
 ) {
-  const facts = extractLessonFacts(chunks);
-  const sentences = uniqueTexts(splitSentences(chunks));
-  const baseSnippets = sentences.length > 0
-    ? sentences
-    : chunks.map((chunk) => cleanChunkText(chunk.text)).filter(Boolean);
-  const targetCount = getStudyToolItemCount(tool, itemCount);
-  const snippetFacts = buildFactsFromSnippets(baseSnippets);
-  const emergencyFacts = buildEmergencyFactsFromChunks(chunks);
-  const studyFacts = uniqueFacts([
-    ...facts,
-    ...snippetFacts,
-    ...emergencyFacts,
-  ]);
-  const selectedFacts = tool === 'quiz'
-    ? buildQuizFacts(studyFacts, baseSnippets, targetCount)
-    : repeatToCount(studyFacts, targetCount);
-
-  if (selectedFacts.length === 0) {
-    return tool === 'quiz'
-      ? 'ALAB needs clearer lesson definitions before making a quiz.'
-      : 'ALAB needs clearer lesson definitions before making flashcards.';
+  if (!text) {
+    return false;
   }
 
   if (tool === 'flashcards') {
-    return selectedFacts
-      .map((fact) =>
-        [
-          `Front: ${fact.term}`,
-          `Back: ${shortText(fact.detail.replace(/_____+/g, fact.term), 220)}`,
-        ].join('\n')
-      )
-      .join('\n\n');
+    return countFlashcards(text) >= Math.min(targetCount, 20);
   }
 
-  return selectedFacts
-    .map((fact, index) =>
-      buildFallbackQuizQuestion(fact, selectedFacts, index, mode)
-    )
-    .join('\n\n');
-}
-
-function getStudyToolItemCount(tool: 'quiz' | 'flashcards', requestedCount?: number) {
-  const fallbackCount = tool === 'quiz' ? quizItemCount : flashcardItemCount;
-
-  if (!requestedCount || !Number.isFinite(requestedCount)) {
-    return fallbackCount;
+  if (mode !== 'mcq') {
+    return /^question\s*[:.)-]/im.test(text) && /^answer\s*[:.)-]/im.test(text);
   }
 
-  return Math.max(1, Math.min(maxQuizItemCount, Math.round(requestedCount)));
-}
-
-function repeatToCount<T>(items: T[], count: number) {
-  if (items.length === 0) {
-    return [];
-  }
-
-  return Array.from({ length: count }, (_, index) => items[index % items.length]);
-}
-
-function extractLessonFacts(chunks: { text: string }[]): LessonFact[] {
-  const facts = chunks
-    .flatMap((chunk) => getLessonFactCandidates(chunk.text))
-    .map(parseLessonFact)
-    .filter((fact): fact is LessonFact => Boolean(fact));
-
-  return uniqueFacts(facts);
-}
-
-function buildFactsFromSnippets(snippets: string[]): LessonFact[] {
-  const definitionFacts = uniqueTexts(snippets)
-    .map(parseLessonFactFromDefinition)
-    .filter((fact): fact is LessonFact => Boolean(fact));
-
-  if (definitionFacts.length > 0) {
-    return definitionFacts;
-  }
-
-  return uniqueTexts(snippets)
-    .filter(isUsefulSentence)
-    .slice(0, maxQuizItemCount)
-    .map((snippet) => ({
-      term: shortText(snippet, 130),
-      detail: 'This statement is true based on the lesson.',
-      sourceText: snippet,
-      kind: 'statement' as const,
-    }));
-}
-
-function buildEmergencyFactsFromChunks(chunks: { text: string }[]): LessonFact[] {
-  return uniqueTexts(
-    chunks
-      .map((chunk) => cleanChunkText(chunk.text))
-      .flatMap((text) => text.split(/(?<=[.!?])\s+|\n+/))
-      .map((text) => shortText(text, 160))
-      .filter(isUsefulEmergencyFactText)
-  )
-    .slice(0, maxQuizItemCount)
-    .map((snippet) => ({
-      term: snippet,
-      detail: 'This statement is true based on the lesson.',
-      sourceText: snippet,
-      kind: 'statement' as const,
-    }));
-}
-
-function isUsefulEmergencyFactText(text: string) {
-  const cleanText = cleanLessonText(text);
-  const words = cleanText.split(/\s+/).filter(Boolean);
-
-  return (
-    cleanText.length >= 28 &&
-    cleanText.length <= 180 &&
-    words.length >= 5 &&
-    !isNoisyLessonText(cleanText)
-  );
-}
-
-function buildQuizFacts(
-  facts: LessonFact[],
-  snippets: string[],
-  targetCount: number
-) {
-  const selectedFacts = uniqueFacts(facts).slice(0, targetCount);
-
-  if (selectedFacts.length >= targetCount) {
-    return selectedFacts;
-  }
-
-  const extraFacts = uniqueFacts([
-    ...selectedFacts,
-    ...buildFactsFromSnippets(snippets),
-  ]).slice(0, targetCount);
-
-  if (extraFacts.length >= targetCount) {
-    return extraFacts;
-  }
-
-  return repeatToCount(extraFacts, targetCount);
-}
-
-function parseLessonFact(sentence: string): LessonFact | null {
-  const cleanSentence = cleanChunkText(sentence);
-
-  if (!isUsefulSentence(cleanSentence) || isNoisyLessonText(cleanSentence)) {
-    return null;
-  }
-
-  const definitionFact = parseLessonFactFromDefinition(cleanSentence);
-
-  if (definitionFact) {
-    return definitionFact;
-  }
-
-  const patterns = [
-    /^(.{2,70}?)(?:\s+-\s+|\s*[:\u2013\u2014]\s*)(.+)$/i,
-  ];
-
-  for (const pattern of patterns) {
-    const match = cleanSentence.match(pattern);
-
-    if (!match) {
-      continue;
-    }
-
-    const rawTerm = cleanStudyTerm(match[1]);
-    const rawDetail = match.length >= 4
-      ? `${match[2]} ${match[3]}`
-      : match[2];
-    const detail = cleanStudyDetail(rawDetail, rawTerm);
-
-    if (isUsefulTerm(rawTerm) && isUsefulSentence(detail)) {
-      return {
-        term: rawTerm,
-        detail,
-        sourceText: cleanSentence,
-        kind: 'term',
-      };
-    }
-  }
-
-  return null;
-}
-
-function parseLessonFactFromDefinition(sentence: string): LessonFact | null {
-  const cleanSentence = cleanChunkText(sentence);
-  const calledMatch = cleanSentence.match(
-    /^(.{12,170}?)\s+(?:is|are)\s+called\s+(?:a|an|the)?\s*([A-Za-z][A-Za-z0-9 /()+#.-]{1,35})\.?$/i
-  );
-
-  if (calledMatch) {
-    const rawTerm = cleanStudyTerm(calledMatch[2]);
-    const detail = cleanStudyDetail(`${calledMatch[1]} is called ${rawTerm}`, rawTerm);
-
-    if (
-      isUsefulTerm(rawTerm) &&
-      isUsefulSentence(detail) &&
-      isAnswerableFact(rawTerm, detail)
-    ) {
-      return {
-        term: rawTerm,
-        detail,
-        sourceText: cleanSentence,
-        kind: 'term',
-      };
-    }
-  }
-
-  const definitionPatterns = [
-    /\b([A-Z][A-Za-z0-9 /()+#.-]{2,45})\s+(is|are|means|refers to|describes|uses|is used for|is used to|are used for|are used to)\s+(.+)$/i,
-    /\b([A-Z][A-Za-z0-9 /()+#.-]{2,45})(?:\s+-\s+|\s*[:\u2013\u2014]\s+)(.+)$/i,
-  ];
-
-  for (const pattern of definitionPatterns) {
-    const match = cleanSentence.match(pattern);
-
-    if (!match) {
-      continue;
-    }
-
-    const rawTerm = cleanStudyTerm(match[1]);
-    const rawDetail = match.length >= 4 ? `${match[2]} ${match[3]}` : match[2];
-    const detail = cleanStudyDetail(rawDetail, rawTerm);
-
-    if (
-      isUsefulTerm(rawTerm) &&
-      isUsefulSentence(detail) &&
-      isAnswerableFact(rawTerm, detail)
-    ) {
-      return {
-        term: rawTerm,
-        detail,
-        sourceText: cleanSentence,
-        kind: 'term',
-      };
-    }
-  }
-
-  return null;
-}
-
-function cleanStudyTerm(term: string) {
-  return titleCase(
-    cleanLessonText(term)
-      .replace(/^\W+|\W+$/g, '')
-      .replace(/^(the|a|an)\s+/i, '')
-      .replace(/\s+/g, ' ')
-    .trim()
-  );
-}
-
-function cleanStudyDetail(detail: string, term: string) {
-  return cleanLessonText(detail)
-    .replace(new RegExp(`\\b${escapeRegExp(term)}\\b`, 'gi'), '_____')
-    .replace(/\s+/g, ' ')
-    .replace(/^\W+/, '')
-    .trim();
-}
-
-function isUsefulTerm(term: string) {
-  const normalized = term.toLowerCase();
-
-  return (
-    term.length >= 3 &&
-    term.length <= 45 &&
-    !term.includes(',') &&
-    !term.includes('?') &&
-    !/\b(is|are|means|refers|called|enough|erased|first|level|pages|designed|absolute|beginner|everywhere|today)\b/i.test(term) &&
-    !normalized.includes('question') &&
-    !normalized.includes('answer') &&
-    !normalized.includes('according') &&
-    !normalized.includes('pdf') &&
-    !normalized.includes('chapter') &&
-    !normalized.includes('page') &&
-    !normalized.includes('lesson detail') &&
-    !genericStudyTerms.has(normalized) &&
-    !/^\d+$/.test(normalized)
-  );
-}
-
-function isAnswerableFact(term: string, detail: string) {
-  const normalizedTerm = normalizeOption(term);
-  const normalizedDetail = normalizeOption(detail);
-
-  return (
-    normalizedTerm.length > 0 &&
-    normalizedDetail.length >= 20 &&
-    !normalizedDetail.includes(normalizedTerm) &&
-    !normalizedDetail.includes('no prior knowledge') &&
-    !normalizedDetail.includes('beginner pages') &&
-    !normalizedDetail.includes('first edition') &&
-    !normalizedDetail.includes('ready to study') &&
-    !normalizedDetail.startsWith('this ') &&
-    !normalizedDetail.startsWith('it ') &&
-    normalizedDetail.split(/\s+/).length >= 4
-  );
-}
-
-function uniqueFacts(facts: LessonFact[]) {
-  const seen = new Set<string>();
-  const unique: LessonFact[] = [];
-
-  for (const fact of facts) {
-    const key = normalizeOption(fact.term);
-
-    if (!key || seen.has(key)) {
-      continue;
-    }
-
-    seen.add(key);
-    unique.push(fact);
-  }
-
-  return unique;
-}
-
-function buildFallbackQuizQuestion(
-  fact: LessonFact,
-  allFacts: LessonFact[],
-  index: number,
-  mode: StudyToolMode
-) {
-  if (mode === 'fill_blank') {
-    return [
-      `Question: ${buildFillBlankQuestion(fact)}`,
-      `Answer: ${fact.term}`,
-      `Explanation: ${shortText(fact.detail.replace(/_____+/g, fact.term), 170)}`,
-    ].join('\n');
-  }
-
-  if (mode === 'essay') {
-    return [
-      `Question: Explain ${fact.term} in your own words.`,
-      `Answer: ${shortText(fact.detail.replace(/_____+/g, fact.term), 210)}`,
-      `Explanation: Include the lesson idea and one clear example.`,
-    ].join('\n');
-  }
-
-  if (fact.kind === 'statement') {
-    return buildStatementQuizQuestion(fact, allFacts, index);
-  }
-
-  const options = buildUniqueOptions(fact, allFacts, index);
-  const correctIndex = options.findIndex(
-    (option) => normalizeOption(option) === normalizeOption(fact.term)
-  );
-  const answerLetter = String.fromCharCode(65 + Math.max(0, correctIndex));
-  const correctOption = options[Math.max(0, correctIndex)] ?? fact.term;
-
-  return [
-    `Question: ${buildDefinitionQuestion(fact)}`,
-    `A. ${options[0]}`,
-    `B. ${options[1]}`,
-    `C. ${options[2]}`,
-    `D. ${options[3]}`,
-    `Correct answer: ${answerLetter}. ${correctOption}`,
-    `Explanation: ${shortText(fact.detail.replace(/_____+/g, fact.term), 170)}`,
-  ].join('\n');
-}
-
-function buildStatementQuizQuestion(
-  fact: LessonFact,
-  allFacts: LessonFact[],
-  index: number
-) {
-  const options = buildStatementOptions(fact, allFacts, index);
-  const correctIndex = options.findIndex(
-    (option) => normalizeOption(option) === normalizeOption(fact.term)
-  );
-  const answerLetter = String.fromCharCode(65 + Math.max(0, correctIndex));
-  const correctOption = options[Math.max(0, correctIndex)] ?? fact.term;
-
-  return [
-    'Question: Which statement is true based on the lesson?',
-    `A. ${options[0]}`,
-    `B. ${options[1]}`,
-    `C. ${options[2]}`,
-    `D. ${options[3]}`,
-    `Correct answer: ${answerLetter}. ${correctOption}`,
-    `Explanation: ${shortText(correctOption, 170)}`,
-  ].join('\n');
-}
-
-function buildDefinitionQuestion(fact: LessonFact) {
-  const detail = fact.detail.replace(/_____+/g, 'this idea');
-  const prompt = detail.charAt(0).toUpperCase() + detail.slice(1);
-
-  return `Which word matches this meaning: ${shortText(prompt, 130)}?`;
-}
-
-function buildFillBlankQuestion(fact: LessonFact) {
-  if (fact.detail.includes('_____')) {
-    return shortText(fact.detail, 150);
-  }
-
-  return `_____ means ${shortText(fact.detail, 135)}`;
-}
-
-function buildUniqueOptions(
-  fact: LessonFact,
-  allFacts: LessonFact[],
-  index: number
-) {
-  const distractors = [
-    ...allFacts.map((item) => item.term),
-  ].filter((term) => normalizeOption(term) !== normalizeOption(fact.term));
-  const uniqueDistractors = uniqueByNormalized(distractors).slice(0, 12);
-  const selectedDistractors = rotateItems(uniqueDistractors, index).slice(0, 3);
-  const fallbackDistractors = getFallbackDistractors(fact.term);
-  const paddedOptions = uniqueByNormalized([
-    fact.term,
-    ...selectedDistractors,
-    ...fallbackDistractors,
-  ]).slice(0, 4);
-
-  return rotateItems(paddedOptions, index).slice(0, 4);
-}
-
-function buildStatementOptions(
-  fact: LessonFact,
-  allFacts: LessonFact[],
-  index: number
-) {
-  const distractors = allFacts
-    .map((item) => item.term)
-    .filter((term) => normalizeOption(term) !== normalizeOption(fact.term));
-  const fallbackDistractors = [
-    'The lesson says computers cannot process data.',
-    'The lesson says storage is only temporary.',
-    'The lesson says software is the physical part of a computer.',
-    'The lesson says a byte is smaller than a bit.',
-    'The lesson says input is the final result from a computer.',
-  ];
-  const options = uniqueByNormalized([
-    fact.term,
-    ...rotateItems(distractors, index).slice(0, 3),
-    ...fallbackDistractors,
-  ]).slice(0, 4);
-
-  return rotateItems(options, index).slice(0, 4);
-}
-
-function getFallbackDistractors(correctTerm: string) {
-  const normalizedTerm = normalizeOption(correctTerm);
-  const computingTerms = [
-    'Computer',
-    'Hardware',
-    'Software',
-    'RAM',
-    'Storage',
-    'Byte',
-    'Bit',
-    'Input',
-    'Output',
-    'Data',
-    'Application',
-    'Operating System',
-  ];
-
-  return computingTerms.filter((term) => normalizeOption(term) !== normalizedTerm);
-}
-
-function rotateItems<T>(items: T[], offset: number) {
-  if (items.length === 0) {
-    return items;
-  }
-
-  const start = offset % items.length;
-  return [...items.slice(start), ...items.slice(0, start)];
-}
-
-function uniqueByNormalized(items: string[]) {
-  const seen = new Set<string>();
-  const unique: string[] = [];
-
-  for (const item of items) {
-    const cleanItem = cleanStudyTerm(item);
-    const key = normalizeOption(cleanItem);
-
-    if (!key || seen.has(key)) {
-      continue;
-    }
-
-    seen.add(key);
-    unique.push(cleanItem);
-  }
-
-  return unique;
-}
-
-function normalizeOption(value: string) {
-  return value.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
-}
-
-function titleCase(value: string) {
-  return value
-    .split(/\s+/)
-    .filter(Boolean)
-    .map((word) =>
-      word.length <= 3 && word === word.toUpperCase()
-        ? word
-        : `${word.charAt(0).toUpperCase()}${word.slice(1)}`
-    )
-    .join(' ');
-}
-
-function escapeRegExp(value: string) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-const genericStudyTerms = new Set([
-  'activity',
-  'application',
-  'chapter',
-  'definition',
-  'digital tool',
-  'edition',
-  'example',
-  'hardware',
-  'lesson',
-  'module',
-  'page',
-  'paragraph',
-  'question',
-  'section',
-  'software',
-  'software hardware',
-  'system',
-  'this',
-  'topic',
-]);
-
-function getLessonFactCandidates(text: string) {
-  const cleanText = cleanLessonText(text);
-  const lineCandidates = cleanText
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) =>
-      line.length <= 180 &&
-      /(?:\s+-\s+|[:\u2013\u2014]|\b(?:is|are|means|refers to|is used for|is used to|called)\b)/i.test(line)
-    );
-
-  return uniqueTexts([
-    ...lineCandidates,
-    ...splitReadableSentences(cleanText),
-  ]).filter((candidate) => !isNoisyLessonText(candidate));
-}
-
-function isUsefulSentence(sentence: string) {
-  const cleanSentence = cleanLessonText(sentence);
-  const words = cleanSentence.split(/\s+/).filter(Boolean);
-
-  return (
-    cleanSentence.length >= 24 &&
-    cleanSentence.length <= 260 &&
-    words.length >= 4 &&
-    !isNoisyLessonText(cleanSentence)
-  );
-}
-
-function isNoisyLessonText(text: string) {
-  const normalized = text.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
-  const chapterMentions = normalized.match(/\bchapter\s+\d+\b/g)?.length ?? 0;
-
-  return (
-    !normalized ||
-    /^page \d+$/.test(normalized) ||
-    /^chapter \d*/.test(normalized) ||
-    /^module \d*/.test(normalized) ||
-    chapterMentions >= 2 ||
-    /\bchapter\s+\d+\s+.+\bchapter\s+\d+\b/i.test(text) ||
-    /^[-|_\s]+$/.test(text) ||
-    normalized.includes('table of contents') ||
-    normalized.includes('first edition') ||
-    normalized.includes('level beginner') ||
-    normalized.includes('no prior knowledge') ||
-    normalized.includes('designed for absolute beginners') ||
-    normalized.includes('computers are everywhere today') ||
-    normalized.includes('according to the pdf') ||
-    normalized.includes('uploaded pdf')
-  );
+  return countValidMcqQuestions(text) >= Math.min(targetCount, 10);
 }

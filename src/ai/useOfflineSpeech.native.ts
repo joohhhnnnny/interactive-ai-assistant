@@ -10,6 +10,7 @@ import {
   models,
   useSpeechToText,
 } from 'react-native-executorch';
+import type { SpeechToTextType } from 'react-native-executorch';
 import { getAppSetting } from '../data/database';
 
 const modelDownloadedKey = 'offline_ai_model_downloaded';
@@ -219,11 +220,7 @@ export function useOfflineSpeech() {
     setIsTranscribing(true);
 
     try {
-      const result = await speechToText.transcribe(waveform, {
-        language: 'tl',
-      });
-
-      return result.text.trim();
+      return transcribeWithLanguageFallback(speechToText, waveform);
     } finally {
       setIsTranscribing(false);
     }
@@ -256,6 +253,41 @@ export function useOfflineSpeech() {
     stopAndTranscribe,
     cancelListening,
   };
+}
+
+async function transcribeWithLanguageFallback(
+  speechToText: SpeechToTextType,
+  waveform: Float32Array
+) {
+  const tagalogResult = await speechToText.transcribe(waveform, {
+    language: 'tl',
+  });
+  const tagalogText = tagalogResult.text.trim();
+
+  if (isUsableTranscript(tagalogText)) {
+    return tagalogText;
+  }
+
+  try {
+    const englishResult = await speechToText.transcribe(waveform, {
+      language: 'en',
+    });
+    const englishText = englishResult.text.trim();
+
+    return isUsableTranscript(englishText) ? englishText : tagalogText;
+  } catch {
+    return tagalogText;
+  }
+}
+
+function isUsableTranscript(text: string) {
+  const normalized = text.replace(/\s+/g, ' ').trim();
+
+  return (
+    normalized.length >= 3 &&
+    !/^\W+$/.test(normalized) &&
+    !/^(you|uh|um|hmm)$/i.test(normalized)
+  );
 }
 
 async function stopAudioStreamSafely(stream?: AudioStreamHandle | null) {

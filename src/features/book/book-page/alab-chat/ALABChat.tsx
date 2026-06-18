@@ -1,6 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Keyboard, Platform, Pressable, Text, TextInput, useWindowDimensions, View } from 'react-native';
-import { KeyboardAwareScrollView, KeyboardAwareScrollViewRef, KeyboardStickyView } from 'react-native-keyboard-controller';
+import {
+  Keyboard,
+  Platform,
+  Pressable,
+  ScrollView,
+  Text,
+  TextInput,
+  useWindowDimensions,
+  View,
+} from 'react-native';
+import { KeyboardStickyView } from 'react-native-keyboard-controller';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useOfflineSpeech } from '../../../../ai/useOfflineSpeech';
 import { IconMic, IconSend } from '../../../../components/icons/icons';
@@ -79,7 +88,7 @@ export function ALABChat({
   );
   const offlineSpeech = useOfflineSpeech();
 
-  const scrollRef = useRef<KeyboardAwareScrollViewRef>(null);
+  const scrollRef = useRef<ScrollView>(null);
   const isMountedRef = useRef(true);
   const activeRequestIdRef = useRef(0);
 
@@ -132,6 +141,7 @@ export function ALABChat({
 
     if (!question) return;
 
+    const conversationContext = buildConversationContext(messages);
     const requestId = activeRequestIdRef.current + 1;
     const startedAt = Date.now();
     activeRequestIdRef.current = requestId;
@@ -200,8 +210,13 @@ export function ALABChat({
       }
 
       const answer = intent
-        ? await offlineAi.generateStudyTool(intent.tool, intent.mode, intent.count)
-        : await offlineAi.answerQuestion(question);
+        ? await offlineAi.generateStudyTool(
+          intent.tool,
+          intent.mode,
+          intent.count,
+          conversationContext
+        )
+        : await offlineAi.answerQuestion(question, conversationContext);
 
       if (!isMountedRef.current || activeRequestIdRef.current !== requestId) {
         return;
@@ -264,7 +279,7 @@ export function ALABChat({
         setIsTyping(false);
       }
     }
-  }, [book.id, input, isTyping, offlineAi]);
+  }, [book.id, input, isTyping, messages, offlineAi]);
 
   const addLocalStatusMessage = useCallback((text: string) => {
     const statusMessage: ChatMessage = {
@@ -366,14 +381,13 @@ export function ALABChat({
 
   return (
     <View style={styles.chatRoot}>
-      <KeyboardAwareScrollView
+      <ScrollView
         ref={scrollRef}
         style={styles.chatScroll}
-        bottomOffset={96}
-        extraKeyboardSpace={0}
         keyboardShouldPersistTaps="handled"
         contentContainerStyle={[
           styles.chatContent,
+          isComposerFocused && styles.chatContentKeyboardFocused,
           isTablet && styles.tabletTabContent,
         ]}
         showsVerticalScrollIndicator={false}
@@ -469,20 +483,24 @@ export function ALABChat({
                 </View>
               </View>
             ) : null}
+
+            {isComposerFocused ? (
+              <View style={styles.keyboardScrollSpacer} />
+            ) : null}
           </View>
         )}
-      </KeyboardAwareScrollView>
+      </ScrollView>
 
       <KeyboardStickyView
         enabled={Platform.OS === 'android' || Platform.OS === 'ios'}
-        offset={{ opened: 0, closed: 0 }}
-        style={styles.chatInputSticky}
+        offset={{ closed: 0, opened: 18 }}
+        style={styles.chatInputDock}
       >
         <View
           style={[
             styles.chatInputArea,
             {
-              paddingBottom: isComposerFocused ? 3 : Math.max(insets.bottom, 6),
+              paddingBottom: isComposerFocused ? 14 : Math.max(insets.bottom, 6),
             },
           ]}
         >
@@ -502,6 +520,9 @@ export function ALABChat({
                 setTimeout(() => {
                   scrollRef.current?.scrollToEnd({ animated: true });
                 }, 120);
+                setTimeout(() => {
+                  scrollRef.current?.scrollToEnd({ animated: true });
+                }, 320);
               }}
               onBlur={() => {
                 setIsComposerFocused(false);
@@ -549,4 +570,36 @@ export function ALABChat({
       ) : null}
     </View>
   );
+}
+
+function buildConversationContext(messages: ChatMessage[]) {
+  return messages
+    .filter((message) => message.kind !== 'status')
+    .slice(-8)
+    .map((message) => {
+      const role = message.role === 'user' ? 'Student' : 'ALAB';
+      const kind = message.kind === 'quiz'
+        ? 'quiz'
+        : message.kind === 'flashcards'
+          ? 'flashcards'
+          : 'message';
+      const text = compactMessageText(message.text, message.kind);
+
+      return `${role} ${kind}: ${text}`;
+    })
+    .join('\n');
+}
+
+function compactMessageText(
+  text: string,
+  kind?: ChatMessage['kind']
+) {
+  const normalized = text.replace(/\s+/g, ' ').trim();
+  const maxLength = kind === 'quiz' || kind === 'flashcards' ? 260 : 180;
+
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+
+  return `${normalized.slice(0, maxLength).replace(/\s+\S*$/, '')}...`;
 }

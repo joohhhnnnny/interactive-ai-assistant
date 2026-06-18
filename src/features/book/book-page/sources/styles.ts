@@ -109,7 +109,7 @@ export const styles = StyleSheet.create({
   sourcesContent: {
     paddingHorizontal: 20,
     paddingTop: 24,
-    paddingBottom: 40,
+    paddingBottom: 156,
     gap: 20,
   },
   tabletTabContent: {

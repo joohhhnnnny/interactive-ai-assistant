@@ -14,7 +14,10 @@ type OfflineAiResponse = {
 };
 
 export function useOfflineAi(_bookId?: string, _bookTitle?: string) {
-  const answerQuestion = async (_question?: string): Promise<OfflineAiResponse> => ({
+  const answerQuestion = async (
+    _question?: string,
+    _conversationContext?: string
+  ): Promise<OfflineAiResponse> => ({
     text: 'The study helper is not available in this preview yet.',
     sources: [],
     answerMode: 'status',
@@ -24,7 +27,8 @@ export function useOfflineAi(_bookId?: string, _bookTitle?: string) {
   const generateStudyTool = async (
     _tool?: 'quiz' | 'flashcards',
     _mode?: 'mcq' | 'fill_blank' | 'essay',
-    _requestedCount?: number
+    _requestedCount?: number,
+    _conversationContext?: string
   ): Promise<OfflineAiResponse> => ({
     text: 'Quizzes and flashcards are not available in this preview yet.',
     sources: [],

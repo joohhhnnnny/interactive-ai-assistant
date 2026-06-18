@@ -1,17 +1,14 @@
+import { listSourceChunksByBook, SourceChunk } from '../data/database';
 import {
-  EmbeddedSourceChunk,
-  listEmbeddedChunksByBook,
-  listSourceChunksByBook,
-  searchChunksByText,
-  SourceChunk,
-} from '../data/database';
+  RagFallbackKind,
+  RagRetrievedChunk,
+  searchBookChunks,
+} from './rag/vector-store/store';
 import { cleanLessonText } from './textCleanup';
 
-export type RetrievedChunk = SourceChunk & {
-  score: number;
-};
+export type RetrievedChunk = RagRetrievedChunk;
 
-export type RetrievalFallbackKind = 'embedding' | 'text' | 'none';
+export type RetrievalFallbackKind = RagFallbackKind;
 
 export type RetrievalConfidence = 'none' | 'low' | 'medium' | 'high';
 
@@ -23,115 +20,7 @@ export type RetrievalResult = {
   sourceCount: number;
 };
 
-const minimumSimilarity = 0.24;
-const minimumFallbackScore = 0.35;
 const maxGroundedChunkCharacters = 900;
-const searchStopWords = new Set([
-  'about',
-  'after',
-  'again',
-  'also',
-  'answer',
-  'because',
-  'before',
-  'book',
-  'could',
-  'does',
-  'explain',
-  'from',
-  'have',
-  'lesson',
-  'like',
-  'make',
-  'mean',
-  'please',
-  'question',
-  'should',
-  'source',
-  'that',
-  'their',
-  'there',
-  'these',
-  'this',
-  'what',
-  'when',
-  'where',
-  'which',
-  'with',
-  'would',
-  'your',
-]);
-
-function dotProduct(left: ArrayLike<number>, right: ArrayLike<number>) {
-  const length = Math.min(left.length, right.length);
-  let total = 0;
-
-  for (let index = 0; index < length; index += 1) {
-    total += left[index] * right[index];
-  }
-
-  return total;
-}
-
-function magnitude(vector: ArrayLike<number>) {
-  let total = 0;
-
-  for (let index = 0; index < vector.length; index += 1) {
-    total += vector[index] * vector[index];
-  }
-
-  return Math.sqrt(total);
-}
-
-function cosineSimilarity(left: ArrayLike<number>, right: ArrayLike<number>) {
-  const denominator = magnitude(left) * magnitude(right);
-
-  if (denominator === 0) {
-    return 0;
-  }
-
-  return dotProduct(left, right) / denominator;
-}
-
-function rankEmbeddedChunks(
-  chunks: EmbeddedSourceChunk[],
-  queryEmbedding: ArrayLike<number>,
-  topK: number
-): RetrievedChunk[] {
-  return chunks
-    .filter((chunk) => chunk.embedding && chunk.embedding.length > 0)
-    .map((chunk) => ({
-      ...chunk,
-      score: cosineSimilarity(queryEmbedding, chunk.embedding ?? []),
-    }))
-    .filter((chunk) => chunk.score >= minimumSimilarity)
-    .sort((a, b) => b.score - a.score)
-    .slice(0, topK);
-}
-
-function getSearchTerms(query: string) {
-  return Array.from(
-    new Set(
-      query
-        .toLowerCase()
-        .replace(/[^a-z0-9\s]/g, ' ')
-        .split(/\s+/)
-        .map((term) => term.trim())
-        .filter((term) => term.length > 2 && !searchStopWords.has(term))
-    )
-  ).slice(0, 8);
-}
-
-function scoreTextByTerms(text: string, terms: string[]) {
-  if (terms.length === 0) {
-    return 0;
-  }
-
-  const normalizedText = text.toLowerCase();
-  const matchedTerms = terms.filter((term) => normalizedText.includes(term));
-
-  return matchedTerms.length / terms.length;
-}
 
 export async function retrieveRelevantChunks(
   bookId: string,
@@ -158,33 +47,15 @@ export async function retrieveRelevantChunksWithMetadata(
   embeddingModelName?: string,
   topK = 5
 ): Promise<RetrievalResult> {
-  if (queryEmbedding) {
-    const chunks = await listEmbeddedChunksByBook(bookId, embeddingModelName);
-    const rankedChunks = rankEmbeddedChunks(chunks, queryEmbedding, topK);
+  const result = await searchBookChunks({
+    bookId,
+    query,
+    queryEmbedding,
+    embeddingModelName,
+    topK,
+  });
 
-    if (rankedChunks.length > 0) {
-      return buildRetrievalResult(rankedChunks, 'embedding');
-    }
-  }
-
-  const terms = getSearchTerms(query);
-
-  if (terms.length === 0) {
-    return buildRetrievalResult([], 'none');
-  }
-
-  const fallbackChunks = await searchChunksByText(bookId, terms.join(' '), topK * 2);
-
-  const chunks = fallbackChunks
-    .map((chunk) => ({
-      ...chunk,
-      score: scoreTextByTerms(chunk.text, terms),
-    }))
-    .filter((chunk) => chunk.score >= minimumFallbackScore)
-    .sort((a, b) => b.score - a.score)
-    .slice(0, topK);
-
-  return buildRetrievalResult(chunks, chunks.length > 0 ? 'text' : 'none');
+  return buildRetrievalResult(result.chunks, result.fallbackKind);
 }
 
 export async function retrieveStudyToolChunks(
@@ -193,21 +64,16 @@ export async function retrieveStudyToolChunks(
   embeddingModelName?: string,
   topK = 20
 ): Promise<RetrievedChunk[]> {
-  if (queryEmbedding) {
-    const chunks = await listEmbeddedChunksByBook(bookId, embeddingModelName);
-    const rankedChunks = rankEmbeddedChunks(chunks, queryEmbedding, topK);
+  const result = await searchBookChunks({
+    bookId,
+    query: 'key terms concepts definitions lesson facts',
+    queryEmbedding,
+    embeddingModelName,
+    topK,
+    fallbackToReadableChunks: true,
+  });
 
-    if (rankedChunks.length > 0) {
-      return rankedChunks;
-    }
-  }
-
-  const chunks = await listSourceChunksByBook(bookId, topK);
-
-  return chunks.map((chunk, index) => ({
-    ...chunk,
-    score: 1 - index * 0.03,
-  }));
+  return result.chunks;
 }
 
 export async function retrieveBookOverviewChunks(
@@ -227,7 +93,11 @@ export function formatSourceLabel(chunk: SourceChunk) {
   return `${chunk.sourceName}${page}`;
 }
 
-export function buildGroundedMessages(question: string, chunks: RetrievedChunk[]) {
+export function buildGroundedMessages(
+  question: string,
+  chunks: RetrievedChunk[],
+  conversationContext?: string
+) {
   const context = chunks
     .map((chunk, index) =>
       [
@@ -248,12 +118,23 @@ export function buildGroundedMessages(question: string, chunks: RetrievedChunk[]
     },
     {
       role: 'user' as const,
-      content: `Lesson context:\n${context}\n\nStudent question:\n${question}\n\nAnswer:`,
+      content: [
+        `Lesson context:\n${context}`,
+        conversationContext
+          ? `Recent conversation for continuity:\n${conversationContext}`
+          : null,
+        `Student question:\n${question}`,
+        'Answer:',
+      ].filter(Boolean).join('\n\n'),
     },
   ];
 }
 
-export function buildGeneralMessages(question: string) {
+export function buildGeneralMessages(question: string, conversationContext?: string) {
+  const contextBlock = conversationContext
+    ? `Recent conversation for continuity:\n${conversationContext}\n\n`
+    : '';
+
   return [
     {
       role: 'system' as const,
@@ -262,7 +143,7 @@ export function buildGeneralMessages(question: string) {
     },
     {
       role: 'user' as const,
-      content: `Student question:\n${question}\n\nAnswer:`,
+      content: `${contextBlock}Student question:\n${question}\n\nAnswer:`,
     },
   ];
 }
@@ -315,15 +196,87 @@ function getRetrievalConfidence(
 export function buildStudyToolMessages(
   tool: 'quiz' | 'flashcards',
   bookTitle: string,
-  chunks: RetrievedChunk[]
+  chunks: RetrievedChunk[],
+  options?: {
+    itemCount?: number;
+    mode?: 'mcq' | 'fill_blank' | 'essay';
+    conversationContext?: string;
+  }
 ) {
-  const request =
-    tool === 'quiz'
-      ? 'Create exactly 10 quiz questions from only this lesson context. Ask about concrete facts, definitions, and ideas from the lesson. Do not use phrases like "according to the PDF" or "uploaded PDF". Make every multiple-choice option unique. Use this plain format with each field on its own line and no markdown:\nQuestion: ...\nA. ...\nB. ...\nC. ...\nD. ...\nCorrect answer: A. ...\nExplanation: ...'
-      : 'Create exactly 20 concise flashcards from only this lesson context. Each front must ask for a real term, fact, or idea from the lesson. Do not use phrases like "according to the PDF" or "uploaded PDF". Use this plain format with each field on its own line and no markdown:\nFront: ...\nBack: ...';
+  const itemCount = options?.itemCount ?? (tool === 'quiz' ? 10 : 20);
+  const mode = options?.mode ?? 'mcq';
+  const request = tool === 'quiz'
+    ? buildQuizRequest(itemCount, mode)
+    : buildFlashcardRequest(itemCount);
+
+  const contextBlock = options?.conversationContext
+    ? `\nRecent conversation:\n${options.conversationContext}\nWhen possible, avoid repeating previous quiz questions, flashcards, or examples.`
+    : '';
 
   return buildGroundedMessages(
-    `${request}\nBook title: ${bookTitle}`,
+    `${request}\nBook title: ${bookTitle}${contextBlock}`,
     chunks
   );
+}
+
+function buildQuizRequest(
+  itemCount: number,
+  mode: 'mcq' | 'fill_blank' | 'essay'
+) {
+  if (mode === 'fill_blank') {
+    return [
+      `Create exactly ${itemCount} fill-in-the-blank quiz questions from only this lesson context.`,
+      'Use concrete facts, definitions, and ideas from the lesson.',
+      'Each blank must have one clear answer from the lesson.',
+      'Do not use phrases like "according to the PDF" or "uploaded PDF".',
+      'Use this plain format with each field on its own line and no markdown:',
+      'Question: ...',
+      'Answer: ...',
+      'Explanation: ...',
+    ].join('\n');
+  }
+
+  if (mode === 'essay') {
+    return [
+      `Create exactly ${itemCount} short essay quiz questions from only this lesson context.`,
+      'Ask questions that help the student explain real ideas from the lesson.',
+      'Provide a concise model answer and one grading hint.',
+      'Do not use phrases like "according to the PDF" or "uploaded PDF".',
+      'Use this plain format with each field on its own line and no markdown:',
+      'Question: ...',
+      'Answer: ...',
+      'Explanation: ...',
+    ].join('\n');
+  }
+
+  return [
+    `Create exactly ${itemCount} multiple-choice quiz questions from only this lesson context.`,
+    'Ask about concrete facts, definitions, and ideas from the lesson.',
+    'Every question must be answerable from the lesson context.',
+    'Every question must have exactly four unique options: A, B, C, and D.',
+    'The correct answer must be one of the displayed options.',
+    'Do not use phrases like "according to the PDF" or "uploaded PDF".',
+    'Do not invent facts that are not in the lesson context.',
+    'Use this plain format with each field on its own line and no markdown:',
+    'Question: ...',
+    'A. ...',
+    'B. ...',
+    'C. ...',
+    'D. ...',
+    'Correct answer: A. ...',
+    'Explanation: ...',
+  ].join('\n');
+}
+
+function buildFlashcardRequest(itemCount: number) {
+  return [
+    `Create exactly ${itemCount} concise flashcards from only this lesson context.`,
+    'Each front must ask for a real term, fact, or idea from the lesson.',
+    'Each back must be short, accurate, and easy for a student to review.',
+    'Do not use phrases like "according to the PDF" or "uploaded PDF".',
+    'Do not invent facts that are not in the lesson context.',
+    'Use this plain format with each field on its own line and no markdown:',
+    'Front: ...',
+    'Back: ...',
+  ].join('\n');
 }

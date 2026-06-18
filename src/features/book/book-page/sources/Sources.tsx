@@ -4,6 +4,7 @@ import * as Sharing from 'expo-sharing';
 import { useEffect, useState } from 'react';
 import { Alert, Platform, Pressable, ScrollView, Text, useWindowDimensions, View } from 'react-native';
 import { processSourcePdfPlaceholder } from '../../../../ai/sourceProcessing';
+import { deleteSourceIndex } from '../../../../ai/rag/vector-store/store';
 import type { SourceProcessingProgress } from '../../../../ai/sourceProcessing';
 import { IconDots, IconPDF, IconPlus } from '../../../../components/icons/icons';
 import { BottomSheet } from '../../../../components/ui/BottomSheet';
@@ -298,6 +299,7 @@ export function Sources({
     setIsRemovingSource(true);
 
     try {
+      await deleteSourceIndex(sourceToRemove.id);
       await deleteSource(sourceToRemove.id);
 
       if (Platform.OS !== 'web') {
