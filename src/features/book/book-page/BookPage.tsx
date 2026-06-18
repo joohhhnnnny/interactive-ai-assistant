@@ -10,20 +10,25 @@ import { ALABChat } from './alab-chat/ALABChat';
 import { Sources } from './sources/Sources';
 import { StudyTools } from './study-tools/StudyTools';
 import { styles } from './styles';
-import { PendingChatPrompt, StudyReadiness } from './types';
+import { StudyReadiness } from './types';
+import { useStopOfflineAiBeforeRemove } from './useStopOfflineAiBeforeRemove';
 
 type BookPageProps = {
   book: Book;
-  onBack: () => void;
+  onBack: () => void | Promise<void>;
+  onOpenFlashcards: () => void;
+  onOpenQuiz: () => void;
 };
 
-export function BookPage({ book, onBack }: BookPageProps) {
+export function BookPage({
+  book,
+  onBack,
+  onOpenFlashcards,
+  onOpenQuiz,
+}: BookPageProps) {
   const { width } = useWindowDimensions();
   const isTablet = width >= 700;
   const [activeTab, setActiveTab] = useState<BookTab>('sources');
-  const [pendingPrompt, setPendingPrompt] = useState<PendingChatPrompt | null>(
-    null
-  );
   const [, setIsChatComposerFocused] = useState(false);
   const [studyReadiness, setStudyReadiness] = useState<StudyReadiness>({
     isChecking: true,
@@ -31,6 +36,7 @@ export function BookPage({ book, onBack }: BookPageProps) {
     hasProcessingSources: false,
   });
   const offlineAi = useOfflineAi(book.id, book.title);
+  useStopOfflineAiBeforeRemove(offlineAi);
 
   const refreshStudyReadiness = useCallback(async () => {
     setStudyReadiness((current) => ({
@@ -80,14 +86,17 @@ export function BookPage({ book, onBack }: BookPageProps) {
     };
   }, [book.id]);
 
-  const sendToolPrompt = (text: string) => {
-    setActiveTab('chat');
-    setPendingPrompt({ id: Date.now(), text });
-  };
-
   const handleTabChange = (tab: BookTab) => {
     setIsChatComposerFocused(false);
     setActiveTab(tab);
+  };
+
+  const handleBack = async () => {
+    const didStop = await offlineAi.stopActiveGeneration();
+
+    if (didStop) {
+      await onBack();
+    }
   };
 
   return (
@@ -95,7 +104,7 @@ export function BookPage({ book, onBack }: BookPageProps) {
       <AppHeader />
 
       <View style={[styles.bookHeader, isTablet && styles.tabletBookHeader]}>
-        <Pressable onPress={onBack} style={styles.backButton}>
+        <Pressable onPress={handleBack} style={styles.backButton}>
           <Text style={styles.backArrow}>←</Text>
           <Text style={styles.backText}>My Books</Text>
         </Pressable>
@@ -127,8 +136,6 @@ export function BookPage({ book, onBack }: BookPageProps) {
             book={book}
             offlineAi={offlineAi}
             onComposerFocusChange={setIsChatComposerFocused}
-            pendingPrompt={pendingPrompt}
-            onPromptHandled={() => setPendingPrompt(null)}
           />
         </View>
 
@@ -139,7 +146,8 @@ export function BookPage({ book, onBack }: BookPageProps) {
           ]}
         >
           <StudyTools
-            onPrompt={sendToolPrompt}
+            onOpenFlashcards={onOpenFlashcards}
+            onOpenQuiz={onOpenQuiz}
             readiness={studyReadiness}
           />
         </View>

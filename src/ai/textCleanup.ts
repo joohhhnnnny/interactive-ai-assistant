@@ -34,7 +34,12 @@ export function cleanLessonText(text: string) {
 }
 
 export function formatStudentOutput(text: string) {
-  const cleanLines = cleanLessonText(text)
+  const boldSegments: string[] = [];
+  const protectedText = text.replace(/\*\*(.*?)\*\*/g, (_, segment: string) => {
+    const index = boldSegments.push(segment) - 1;
+    return `ALAB_BOLD_${index}`;
+  });
+  const cleanLines = cleanLessonText(protectedText)
     .split('\n')
     .map((line) => line.trim())
     .filter((line) => line && !/^\|?\s*-{3,}/.test(line))
@@ -69,7 +74,14 @@ export function formatStudentOutput(text: string) {
     }
   }
 
-  return normalizedLines.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+  return normalizedLines
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .replace(
+      /\bALAB_BOLD_(\d+)\b/g,
+      (_, index: string) => `**${boldSegments[Number(index)] ?? ''}**`
+    )
+    .trim();
 }
 
 export function formatGeneralOutput(text: string) {

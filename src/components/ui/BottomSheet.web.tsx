@@ -1,11 +1,13 @@
 import { ReactNode, useEffect, useRef, useState } from 'react';
 import {
   Animated,
+  Easing,
   Modal,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
+  useWindowDimensions,
   View,
 } from 'react-native';
 
@@ -23,39 +25,59 @@ export function BottomSheet({
   title,
   visible,
 }: BottomSheetProps) {
+  const { height } = useWindowDimensions();
   const [isMounted, setIsMounted] = useState(visible);
   const backdropOpacity = useRef(new Animated.Value(0)).current;
-  const sheetTranslateY = useRef(new Animated.Value(360)).current;
+  const sheetTranslateY = useRef(new Animated.Value(height)).current;
+  const hiddenTranslateY = height;
 
   useEffect(() => {
     if (visible) {
+      let animationFrame: number | null = null;
+
+      backdropOpacity.stopAnimation();
+      sheetTranslateY.stopAnimation();
+      backdropOpacity.setValue(0);
+      sheetTranslateY.setValue(hiddenTranslateY);
       setIsMounted(true);
-      Animated.parallel([
-        Animated.timing(backdropOpacity, {
-          toValue: 1,
-          duration: 160,
-          useNativeDriver: true,
-        }),
-        Animated.spring(sheetTranslateY, {
-          toValue: 0,
-          damping: 26,
-          mass: 0.9,
-          stiffness: 240,
-          useNativeDriver: true,
-        }),
-      ]).start();
-      return;
+
+      animationFrame = requestAnimationFrame(() => {
+        Animated.parallel([
+          Animated.timing(backdropOpacity, {
+            toValue: 1,
+            duration: 170,
+            easing: Easing.out(Easing.ease),
+            useNativeDriver: true,
+          }),
+          Animated.timing(sheetTranslateY, {
+            toValue: 0,
+            duration: 240,
+            easing: Easing.out(Easing.cubic),
+            useNativeDriver: true,
+          }),
+        ]).start();
+      });
+
+      return () => {
+        if (animationFrame !== null) {
+          cancelAnimationFrame(animationFrame);
+        }
+      };
     }
 
+    backdropOpacity.stopAnimation();
+    sheetTranslateY.stopAnimation();
     Animated.parallel([
       Animated.timing(backdropOpacity, {
         toValue: 0,
         duration: 140,
+        easing: Easing.in(Easing.ease),
         useNativeDriver: true,
       }),
       Animated.timing(sheetTranslateY, {
-        toValue: 360,
-        duration: 180,
+        toValue: hiddenTranslateY,
+        duration: 210,
+        easing: Easing.in(Easing.cubic),
         useNativeDriver: true,
       }),
     ]).start(({ finished }) => {
@@ -63,7 +85,7 @@ export function BottomSheet({
         setIsMounted(false);
       }
     });
-  }, [backdropOpacity, sheetTranslateY, visible]);
+  }, [backdropOpacity, hiddenTranslateY, sheetTranslateY, visible]);
 
   if (!isMounted) {
     return null;

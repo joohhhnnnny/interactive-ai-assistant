@@ -1,4 +1,5 @@
 import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { LessonScannerAnimation } from '../components/ui/LessonScannerAnimation';
 import { useOfflineStudyHelperStatus } from './useOfflineStudyHelperStatus';
 
 type StudyHelperStatus = {
@@ -92,6 +93,7 @@ function OfflineModelDownloadCardView({ helper }: { helper: StudyHelperStatus })
         ) : null}
         {helper.isLoading ? (
           <View style={styles.statusBox}>
+            <LessonScannerAnimation />
             <Text style={styles.statusText}>
               Processing {helper.progress}%
             </Text>

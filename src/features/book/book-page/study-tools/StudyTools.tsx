@@ -34,10 +34,12 @@ function getToolsReadinessStatus(
 }
 
 export function StudyTools({
-  onPrompt,
+  onOpenFlashcards,
+  onOpenQuiz,
   readiness,
 }: {
-  onPrompt: (prompt: string) => void;
+  onOpenFlashcards: () => void;
+  onOpenQuiz: () => void;
   readiness: StudyReadiness;
 }) {
   const { width } = useWindowDimensions();
@@ -70,7 +72,7 @@ export function StudyTools({
       <View style={[styles.toolCards, isTablet && styles.tabletToolCards]}>
         <Pressable
           disabled={!canUseTools}
-          onPress={() => onPrompt('May I kindly ask for a Quiz please')}
+          onPress={onOpenQuiz}
           style={({ pressed }) => [
             styles.toolCard,
             isTablet && styles.tabletToolCard,
@@ -98,7 +100,7 @@ export function StudyTools({
 
         <Pressable
           disabled={!canUseTools}
-          onPress={() => onPrompt('May I kindly ask for a Flashcard please')}
+          onPress={onOpenFlashcards}
           style={({ pressed }) => [
             styles.toolCard,
             isTablet && styles.tabletToolCard,

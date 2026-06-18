@@ -151,7 +151,16 @@ function renderInlineText(text: string, colorStyle = styles.aiMessageText) {
 }
 
 function cleanMarkdownText(text: string) {
-  return cleanStudentReadableText(text);
+  const boldSegments: string[] = [];
+  const protectedText = text.replace(/\*\*(.*?)\*\*/g, (_, segment: string) => {
+    const index = boldSegments.push(segment) - 1;
+    return `ALAB_BOLD_${index}`;
+  });
+
+  return cleanStudentReadableText(protectedText).replace(
+    /\bALAB_BOLD_(\d+)\b/g,
+    (_, index: string) => `**${boldSegments[Number(index)] ?? ''}**`
+  );
 }
 
 function formatVisibleMessage(text: string) {
@@ -159,7 +168,16 @@ function formatVisibleMessage(text: string) {
     return cleanStudentReadableText(text);
   }
 
-  return formatStudentOutput(text);
+  const boldSegments: string[] = [];
+  const protectedText = text.replace(/\*\*(.*?)\*\*/g, (_, segment: string) => {
+    const index = boldSegments.push(segment) - 1;
+    return `ALAB_BOLD_${index}`;
+  });
+
+  return formatStudentOutput(protectedText).replace(
+    /\bALAB_BOLD_(\d+)\b/g,
+    (_, index: string) => `**${boldSegments[Number(index)] ?? ''}**`
+  );
 }
 
 function looksLikeCodeOutput(text: string) {

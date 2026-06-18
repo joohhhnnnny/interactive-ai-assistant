@@ -767,14 +767,13 @@ export async function listSourcesWithProcessingByBook(
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
     .map((source) => {
       const job = state.processingJobs.find((item) => item.sourceId === source.id);
-      const hasEmbeddedChunk = state.chunks.some((chunk) =>
-        chunk.sourceId === source.id &&
-        state.embeddings.some((embedding) => embedding.chunkId === chunk.id)
+      const hasReadableChunk = state.chunks.some(
+        (chunk) => chunk.sourceId === source.id
       );
       const processingStatus =
-        job?.status === 'ready' && !hasEmbeddedChunk ? 'failed' : job?.status ?? null;
+        job?.status === 'ready' && !hasReadableChunk ? 'failed' : job?.status ?? null;
       const processingError =
-        job?.status === 'ready' && !hasEmbeddedChunk
+        job?.status === 'ready' && !hasReadableChunk
           ? 'ALAB needs to analyze this book again before it is ready.'
           : job?.errorMessage ?? null;
 
@@ -1281,14 +1280,22 @@ export async function searchChunksByText(
   }
 
   const state = readState();
+  const lowerTerms = terms.map((term) => term.toLowerCase());
 
   return state.chunks
     .filter(
       (chunk) =>
         chunk.bookId === numericId &&
-        terms.some((term) => chunk.text.toLowerCase().includes(term))
+        lowerTerms.some((term) => chunk.text.toLowerCase().includes(term))
     )
-    .sort((a, b) => a.sourceId - b.sourceId || a.chunkIndex - b.chunkIndex)
+    .sort((a, b) => {
+      const leftText = a.text.toLowerCase();
+      const rightText = b.text.toLowerCase();
+      const leftScore = lowerTerms.filter((term) => leftText.includes(term)).length;
+      const rightScore = lowerTerms.filter((term) => rightText.includes(term)).length;
+
+      return rightScore - leftScore || a.sourceId - b.sourceId || a.chunkIndex - b.chunkIndex;
+    })
     .slice(0, limit)
     .map((chunk) => mapChunk(state, chunk));
 }
