@@ -5,7 +5,6 @@ import { Screen } from '../../../../components/layout/Screen';
 import { Book } from '../../../../types/Book';
 import {
   Flashcard,
-  normalizeSourceLabels,
   parseFlashcards,
 } from '../alab-chat/studyToolUtils';
 import { OfflineAi } from '../types';
@@ -27,12 +26,10 @@ export function FlashcardsScreen({
   const [isGenerating, setIsGenerating] = useState(false);
   const [isWaitingForHelper, setIsWaitingForHelper] = useState(false);
   const [statusText, setStatusText] = useState('Preparing flashcards...');
-  const [sources, setSources] = useState<string[]>([]);
 
   const runFlashcardsGeneration = useCallback(async () => {
     setIsGenerating(true);
     setStatusText(`Preparing flashcards from ${book.title}...`);
-    setSources([]);
 
     try {
       const answer = await offlineAi.generateStudyTool('flashcards', 'mcq', 20);
@@ -47,7 +44,6 @@ export function FlashcardsScreen({
       setCards(parsedCards);
       setActiveIndex(0);
       setIsFlipped(false);
-      setSources(normalizeSourceLabels(answer.sources));
       setStatusText(`Flashcards ready: ${parsedCards.length} cards`);
     } catch {
       setCards([]);
@@ -139,17 +135,6 @@ export function FlashcardsScreen({
         </View>
 
         <Text style={styles.toolStatusText}>{statusText}</Text>
-
-        {sources.length > 0 ? (
-          <View style={styles.toolSourceBox}>
-            <Text style={styles.toolSourceTitle}>Sources used</Text>
-            {sources.map((source, index) => (
-              <Text key={`${source}-${index}`} style={styles.toolSourceText}>
-                {source}
-              </Text>
-            ))}
-          </View>
-        ) : null}
 
         {activeCard ? (
           <>

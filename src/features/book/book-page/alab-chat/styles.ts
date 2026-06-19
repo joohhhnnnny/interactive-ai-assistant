@@ -134,27 +134,6 @@ export const styles = StyleSheet.create({
     lineHeight: 20,
     fontWeight: '700',
   },
-  sourcesUsed: {
-    marginTop: 10,
-    paddingTop: 10,
-    borderTopWidth: 1,
-    borderTopColor: 'rgba(196,197,213,0.5)',
-    gap: 4,
-  },
-  sourcesUsedTitle: {
-    color: '#002576',
-    fontSize: 12,
-    lineHeight: 16,
-    fontWeight: '700',
-  },
-  sourcesUsedText: {
-    color: '#747685',
-    fontSize: 12,
-    lineHeight: 16,
-    fontWeight: '500',
-    flexShrink: 1,
-    flexWrap: 'wrap',
-  },
   analysisText: {
     marginTop: 10,
     color: '#747685',

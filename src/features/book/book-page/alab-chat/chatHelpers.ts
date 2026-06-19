@@ -46,33 +46,6 @@ export function getComposerPlaceholder(offlineSpeech: ComposerSpeechState) {
   return 'Ask a Question or Create Something...';
 }
 
-export function getVisibleSources(message: ChatMessage) {
-  if (
-    message.role !== 'ai' ||
-    message.kind === 'status' ||
-    !message.sources ||
-    message.sources.length === 0
-  ) {
-    return [];
-  }
-
-  const insufficientAnswer = message.text.toLowerCase();
-
-  if (
-    insufficientAnswer.includes('does not provide enough information') ||
-    insufficientAnswer.includes('not available in this preview') ||
-    insufficientAnswer.includes('not available on this device') ||
-    insufficientAnswer.includes('please prepare the study helper')
-  ) {
-    return [];
-  }
-
-  return Array.from(new Set(message.sources)).filter((source) => {
-    const cleanSource = source.trim();
-    return cleanSource.length > 0 && cleanSource.toLowerCase() !== 'unknown source';
-  });
-}
-
 export function getStudyToolIntent(question: string): StudyToolIntent | null {
   const normalized = question.toLowerCase();
   const requestedCount = getRequestedStudyItemCount(normalized);

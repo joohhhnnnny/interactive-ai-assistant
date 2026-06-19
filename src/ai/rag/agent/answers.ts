@@ -1,4 +1,4 @@
-import { formatStudentOutput } from '../../textCleanup';
+import { formatGeneralOutput, formatStudentOutput } from '../../textCleanup';
 import {
   cleanChunkText,
   isUsefulSentence,
@@ -9,29 +9,48 @@ import {
 
 export type AnswerIntent = 'general' | 'grounded' | 'summary';
 
-export function buildQuickGroundedAnswer(chunks: { text: string }[]) {
+export function buildDirectGroundedAnswer(
+  question: string,
+  chunks: { text: string }[]
+) {
+  const queryTerms = getAnswerTerms(question);
+  const definitionTopic = getDefinitionTopic(question);
   const snippets = uniqueTexts(
     chunks
       .flatMap((chunk) => splitSentences([chunk]))
       .filter(isUsefulSentence)
   );
-  const bestSnippet = snippets[0] ?? chunks
-    .map((chunk) => cleanChunkText(chunk.text))
-    .find(Boolean);
+  const rankedSnippets = snippets
+    .map((snippet, index) => ({
+      snippet,
+      score: scoreAnswerSnippet(
+        snippet,
+        queryTerms,
+        definitionTopic,
+        index
+      ),
+    }))
+    .sort((left, right) => right.score - left.score);
+  const bestRankedSnippet = rankedSnippets[0];
+  const bestSnippet = bestRankedSnippet &&
+    (queryTerms.length === 0 || bestRankedSnippet.score > 0.5)
+    ? bestRankedSnippet.snippet
+    : queryTerms.length === 0
+      ? chunks.map((chunk) => cleanChunkText(chunk.text)).find(Boolean)
+      : undefined;
 
   if (!bestSnippet) {
-    return 'I found a related part in your lesson, but I could not prepare a full answer yet. Please try asking in a simpler way.';
+    return '';
   }
 
-  const support = snippets.find((snippet) => snippet !== bestSnippet);
+  const support = rankedSnippets.find(
+    ({ snippet, score }) => snippet !== bestSnippet && score > 0.5
+  )?.snippet;
 
-  return formatStudentOutput([
-    'I found this lesson idea:',
-    '',
-    shortText(bestSnippet, 190),
-    support ? '' : null,
-    support ? `A helpful detail is: ${shortText(support, 170)}` : null,
-  ].filter(Boolean).join('\n'));
+  return formatGeneralOutput([
+    shortText(bestSnippet, 240),
+    support ? shortText(support, 200) : null,
+  ].filter(Boolean).join('\n\n'));
 }
 
 export function buildPdfSummary(chunks: { text: string; score?: number }[]) {
@@ -85,13 +104,96 @@ export function isBadGroundedAnswer(answer: string) {
   const normalized = answer.toLowerCase();
 
   return (
+    normalized.trim().length < 12 ||
     normalized.includes('no pdf') ||
     normalized.includes('pdf included') ||
     normalized.includes('no document') ||
     normalized.includes('no file') ||
-    normalized.includes('not provided')
+    normalized.includes('not provided') ||
+    normalized.includes('lesson context:') ||
+    normalized.includes('student question:') ||
+    normalized.includes('chunk_id') ||
+    normalized.includes('retrieval score') ||
+    /^(i found (this|a|the)|a helpful detail is|according to (the|your) (pdf|lesson|source))/i.test(
+      normalized.trim()
+    )
   );
 }
+
+function scoreAnswerSnippet(
+  snippet: string,
+  queryTerms: string[],
+  definitionTopic: string,
+  originalIndex: number
+) {
+  const normalized = normalizeAnswerText(snippet);
+  const matchedTerms = queryTerms.filter((term) => normalized.includes(term));
+  const coverage = queryTerms.length > 0
+    ? matchedTerms.length / queryTerms.length
+    : 0;
+  const definitionBonus = definitionTopic && normalized.includes(definitionTopic)
+    && /\b(is|are|means|refers to|defined as|describes)\b/.test(normalized)
+    ? 2.5
+    : 0;
+  const directnessPenalty = /^(page\s+\d+|section:|the importance of|you may|in this (lesson|chapter))/i.test(
+    normalized
+  )
+    ? 1
+    : 0;
+
+  return coverage * 5 + definitionBonus - directnessPenalty - originalIndex * 0.01;
+}
+
+function getDefinitionTopic(question: string) {
+  const match = question.match(
+    /^\s*(?:what|who)\s+(?:is|are|was|were)\s+(.+?)[?.!]*\s*$/i
+  );
+
+  return match ? normalizeAnswerText(match[1]) : '';
+}
+
+function getAnswerTerms(question: string) {
+  return Array.from(
+    new Set(
+      normalizeAnswerText(question)
+        .split(/\s+/)
+        .filter((term) => term.length > 2 && !answerStopWords.has(term))
+    )
+  ).slice(0, 10);
+}
+
+function normalizeAnswerText(text: string) {
+  return text
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+const answerStopWords = new Set([
+  'about',
+  'according',
+  'alab',
+  'book',
+  'chapter',
+  'could',
+  'does',
+  'explain',
+  'from',
+  'lesson',
+  'material',
+  'please',
+  'source',
+  'tell',
+  'that',
+  'this',
+  'what',
+  'when',
+  'where',
+  'which',
+  'with',
+  'would',
+]);
 
 function isSummaryRequest(question: string) {
   const normalized = question.toLowerCase();

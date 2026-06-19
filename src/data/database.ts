@@ -140,6 +140,7 @@ export type StoredChatMessage = {
 };
 
 let databasePromise: Promise<SQLite.SQLiteDatabase> | null = null;
+let sourceChunkFtsAvailable: boolean | null = null;
 
 const bookColors = ['#002576', '#E12531', '#D1A600', '#0038a8'];
 
@@ -324,6 +325,8 @@ export async function initializeDatabase() {
     CREATE INDEX IF NOT EXISTS idx_chat_messages_book_id ON chat_messages(book_id);
     CREATE INDEX IF NOT EXISTS idx_ai_performance_metrics_book_id ON ai_performance_metrics(book_id);
   `);
+
+  await ensureSourceChunkSearchIndex(database);
 
   const columns = await database.getAllAsync<{ name: string }>(
     'PRAGMA table_info(books)'
@@ -1509,6 +1512,39 @@ export async function searchChunksByText(
     return [];
   }
 
+  if (sourceChunkFtsAvailable) {
+    try {
+      const ftsQuery = terms
+        .map((term) => `"${term.replace(/"/g, '""')}"`)
+        .join(' OR ');
+      const rows = await database.getAllAsync<ChunkRow>(
+        `SELECT source_chunks.id,
+                source_chunks.source_id,
+                source_chunks.book_id,
+                source_chunks.chunk_index,
+                source_chunks.page_number,
+                source_chunks.text,
+                source_chunks.token_estimate,
+                source_chunks.created_at,
+                sources.filename AS source_name,
+                bm25(source_chunks_fts) AS match_score
+         FROM source_chunks_fts
+         INNER JOIN source_chunks ON source_chunks.id = source_chunks_fts.rowid
+         INNER JOIN sources ON sources.id = source_chunks.source_id
+         WHERE source_chunks.book_id = ? AND source_chunks_fts MATCH ?
+         ORDER BY match_score ASC, source_chunks.chunk_index ASC
+         LIMIT ?`,
+        numericId,
+        ftsQuery,
+        limit
+      );
+
+      return rows.map(mapChunkRow);
+    } catch {
+      sourceChunkFtsAvailable = false;
+    }
+  }
+
   const matchExpression = terms
     .map(() => 'CASE WHEN LOWER(source_chunks.text) LIKE ? THEN 1 ELSE 0 END')
     .join(' + ');
@@ -1540,4 +1576,57 @@ export async function searchChunksByText(
   );
 
   return rows.map(mapChunkRow);
+}
+
+async function ensureSourceChunkSearchIndex(database: SQLite.SQLiteDatabase) {
+  if (sourceChunkFtsAvailable !== null) {
+    return;
+  }
+
+  try {
+    await database.execAsync(`
+      CREATE VIRTUAL TABLE IF NOT EXISTS source_chunks_fts USING fts5(
+        text,
+        content='source_chunks',
+        content_rowid='id'
+      );
+
+      CREATE TRIGGER IF NOT EXISTS source_chunks_fts_insert
+      AFTER INSERT ON source_chunks BEGIN
+        INSERT INTO source_chunks_fts(rowid, text) VALUES (new.id, new.text);
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS source_chunks_fts_delete
+      AFTER DELETE ON source_chunks BEGIN
+        INSERT INTO source_chunks_fts(source_chunks_fts, rowid, text)
+        VALUES ('delete', old.id, old.text);
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS source_chunks_fts_update
+      AFTER UPDATE OF text ON source_chunks BEGIN
+        INSERT INTO source_chunks_fts(source_chunks_fts, rowid, text)
+        VALUES ('delete', old.id, old.text);
+        INSERT INTO source_chunks_fts(rowid, text) VALUES (new.id, new.text);
+      END;
+    `);
+    const counts = await database.getFirstAsync<{
+      source_count: number;
+      indexed_count: number;
+    }>(
+      `SELECT
+         (SELECT COUNT(*) FROM source_chunks) AS source_count,
+         (SELECT COUNT(*) FROM source_chunks_fts_docsize) AS indexed_count`
+    );
+
+    if ((counts?.source_count ?? 0) !== (counts?.indexed_count ?? 0)) {
+      await database.execAsync(
+        `INSERT INTO source_chunks_fts(source_chunks_fts) VALUES ('rebuild');`
+      );
+    }
+
+    sourceChunkFtsAvailable = true;
+  } catch {
+    // Some custom native builds may omit FTS5. LIKE search remains available.
+    sourceChunkFtsAvailable = false;
+  }
 }
