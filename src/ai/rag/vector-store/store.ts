@@ -8,7 +8,7 @@ import {
   SourceChunk,
 } from '../../../data/database';
 
-export type RagFallbackKind = 'embedding' | 'text' | 'none';
+export type RagFallbackKind = 'hybrid' | 'embedding' | 'text' | 'none';
 
 export type RagIndexStatus = {
   sourceId: string;
@@ -31,10 +31,15 @@ export type RagRetrievedChunk = SourceChunk & {
 
 const minimumSimilarity = 0.24;
 const minimumFallbackScore = 0.35;
+const vectorWeight = 0.72;
+const lexicalWeight = 0.28;
+const diversityWeight = 0.18;
+const candidatePoolMultiplier = 6;
 const searchStopWords = new Set([
   'about',
   'after',
   'again',
+  'alab',
   'also',
   'answer',
   'because',
@@ -48,11 +53,14 @@ const searchStopWords = new Set([
   'lesson',
   'like',
   'make',
+  'message',
   'mean',
   'please',
   'question',
+  'request',
   'should',
   'source',
+  'student',
   'that',
   'their',
   'there',
@@ -116,24 +124,80 @@ export async function searchBookChunks({
   topK?: number;
   fallbackToReadableChunks?: boolean;
 }): Promise<RagSearchResult> {
+  const terms = getSearchTerms(query);
+
   if (queryEmbedding) {
-    const chunks = await listEmbeddedChunksByBook(bookId, embeddingModelName);
-    const rankedChunks = chunks
-      .filter((chunk) => chunk.embedding && chunk.embedding.length > 0)
-      .map((chunk) => ({
+    const [embeddedChunks, textMatches] = await Promise.all([
+      listEmbeddedChunksByBook(bookId, embeddingModelName),
+      terms.length > 0
+        ? searchChunksByText(bookId, terms.join(' '), topK * candidatePoolMultiplier)
+        : Promise.resolve([]),
+    ]);
+    const candidates = new Map<string, HybridCandidate>();
+
+    for (const chunk of embeddedChunks) {
+      const vectorScore = chunk.embedding && chunk.embedding.length > 0
+        ? cosineSimilarity(queryEmbedding, chunk.embedding)
+        : null;
+      const lexicalScore = scoreTextByTerms(chunk.text, terms);
+
+      if (
+        (vectorScore === null || vectorScore < minimumSimilarity) &&
+        lexicalScore < minimumFallbackScore
+      ) {
+        continue;
+      }
+
+      candidates.set(chunk.id, {
         ...chunk,
-        score: cosineSimilarity(queryEmbedding, chunk.embedding ?? []),
-      }))
-      .filter((chunk) => chunk.score >= minimumSimilarity)
-      .sort((a, b) => b.score - a.score);
-    const diverseChunks = selectDiverseChunks(rankedChunks, topK);
+        vectorScore,
+        lexicalScore,
+        score: buildHybridScore(vectorScore, lexicalScore),
+      });
+    }
+
+    for (const chunk of textMatches) {
+      if (candidates.has(chunk.id)) {
+        continue;
+      }
+
+      const lexicalScore = scoreTextByTerms(chunk.text, terms);
+
+      if (lexicalScore < minimumFallbackScore) {
+        continue;
+      }
+
+      candidates.set(chunk.id, {
+        ...chunk,
+        embedding: null,
+        vectorScore: null,
+        lexicalScore,
+        score: lexicalScore,
+      });
+    }
+
+    const rankedChunks = [...candidates.values()]
+      .sort((left, right) => right.score - left.score)
+      .slice(0, Math.max(topK, topK * candidatePoolMultiplier));
+    const diverseChunks = selectDiverseChunks(rankedChunks, topK)
+      .map(toRetrievedChunk);
 
     if (diverseChunks.length > 0) {
-      return buildSearchResult(diverseChunks, 'embedding');
+      const usedLexicalSignal = rankedChunks.some(
+        (chunk) => chunk.lexicalScore >= minimumFallbackScore
+      );
+      const usedVectorSignal = rankedChunks.some(
+        (chunk) => chunk.vectorScore !== null && chunk.vectorScore >= minimumSimilarity
+      );
+      const fallbackKind: RagFallbackKind = usedLexicalSignal && usedVectorSignal
+        ? 'hybrid'
+        : usedVectorSignal
+          ? 'embedding'
+          : 'text';
+
+      return buildSearchResult(diverseChunks, fallbackKind);
     }
   }
-
-  const terms = getSearchTerms(query);
 
   if (terms.length > 0) {
     const fallbackChunks = await searchChunksByText(bookId, terms.join(' '), topK * 2);
@@ -212,7 +276,7 @@ function getSearchTerms(query: string) {
     new Set(
       query
         .toLowerCase()
-        .replace(/[^a-z0-9\s]/g, ' ')
+        .replace(/[^\p{L}\p{N}\s]/gu, ' ')
         .split(/\s+/)
         .map((term) => term.trim())
         .filter((term) => term.length > 2 && !searchStopWords.has(term))
@@ -225,32 +289,154 @@ function scoreTextByTerms(text: string, terms: string[]) {
     return 0;
   }
 
-  const normalizedText = text.toLowerCase();
+  const normalizedText = normalizeSearchText(text);
   const matchedTerms = terms.filter((term) => normalizedText.includes(term));
+  const termCoverage = matchedTerms.length / terms.length;
+  const occurrenceScore = matchedTerms.reduce((total, term) => {
+    return total + Math.min(3, countOccurrences(normalizedText, term));
+  }, 0) / (terms.length * 3);
+  const adjacentPairs = terms
+    .slice(0, -1)
+    .map((term, index) => `${term} ${terms[index + 1]}`);
+  const pairScore = adjacentPairs.length > 0
+    ? adjacentPairs.filter((pair) => normalizedText.includes(pair)).length /
+      adjacentPairs.length
+    : 0;
 
-  return matchedTerms.length / terms.length;
+  return clamp(termCoverage * 0.72 + occurrenceScore * 0.18 + pairScore * 0.1);
+}
+
+type HybridCandidate = RagRetrievedChunk & {
+  embedding?: number[] | null;
+  embeddingModelName?: string | null;
+  vectorScore: number | null;
+  lexicalScore: number;
+};
+
+function buildHybridScore(vectorScore: number | null, lexicalScore: number) {
+  if (vectorScore === null) {
+    return lexicalScore;
+  }
+
+  if (lexicalScore === 0) {
+    return clamp(vectorScore);
+  }
+
+  return clamp(
+    clamp(vectorScore) * vectorWeight + lexicalScore * lexicalWeight
+  );
 }
 
 function selectDiverseChunks<T extends RagRetrievedChunk>(chunks: T[], topK: number) {
   const seenText = new Set<string>();
   const selected: T[] = [];
-
-  for (const chunk of chunks) {
+  const remaining = chunks.filter((chunk) => {
     const key = getChunkDedupeKey(chunk.text);
 
     if (!key || seenText.has(key)) {
-      continue;
+      return false;
     }
 
     seenText.add(key);
-    selected.push(chunk);
+    return true;
+  });
 
-    if (selected.length >= topK) {
-      break;
+  while (remaining.length > 0 && selected.length < topK) {
+    let bestIndex = 0;
+    let bestAdjustedScore = Number.NEGATIVE_INFINITY;
+
+    for (const [index, candidate] of remaining.entries()) {
+      const maximumOverlap = selected.reduce(
+        (maximum, selectedChunk) =>
+          Math.max(maximum, textSimilarity(candidate.text, selectedChunk.text)),
+        0
+      );
+      const hasNewSource = selected.every(
+        (selectedChunk) => selectedChunk.sourceId !== candidate.sourceId
+      );
+      const adjustedScore =
+        candidate.score * (1 - diversityWeight) -
+        maximumOverlap * diversityWeight +
+        (hasNewSource ? 0.025 : 0);
+
+      if (adjustedScore > bestAdjustedScore) {
+        bestAdjustedScore = adjustedScore;
+        bestIndex = index;
+      }
     }
+
+    selected.push(remaining.splice(bestIndex, 1)[0]);
   }
 
   return selected;
+}
+
+function toRetrievedChunk(candidate: HybridCandidate): RagRetrievedChunk {
+  const {
+    embedding: _embedding,
+    embeddingModelName: _embeddingModelName,
+    vectorScore: _vectorScore,
+    lexicalScore: _lexicalScore,
+    ...chunk
+  } = candidate;
+
+  return chunk;
+}
+
+function textSimilarity(left: string, right: string) {
+  const leftTerms = new Set(getContentTerms(left));
+  const rightTerms = new Set(getContentTerms(right));
+
+  if (leftTerms.size === 0 || rightTerms.size === 0) {
+    return 0;
+  }
+
+  let intersectionSize = 0;
+
+  for (const term of leftTerms) {
+    if (rightTerms.has(term)) {
+      intersectionSize += 1;
+    }
+  }
+
+  return intersectionSize / (leftTerms.size + rightTerms.size - intersectionSize);
+}
+
+function getContentTerms(text: string) {
+  return normalizeSearchText(text)
+    .split(/\s+/)
+    .filter((term) => term.length > 2 && !searchStopWords.has(term))
+    .slice(0, 120);
+}
+
+function normalizeSearchText(text: string) {
+  return text
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function countOccurrences(text: string, term: string) {
+  let count = 0;
+  let position = 0;
+
+  while (position < text.length) {
+    const matchIndex = text.indexOf(term, position);
+
+    if (matchIndex < 0) {
+      break;
+    }
+
+    count += 1;
+    position = matchIndex + term.length;
+  }
+
+  return count;
+}
+
+function clamp(value: number) {
+  return Math.max(0, Math.min(1, value));
 }
 
 function getChunkDedupeKey(text: string) {

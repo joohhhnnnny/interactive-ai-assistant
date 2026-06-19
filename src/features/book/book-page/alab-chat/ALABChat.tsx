@@ -16,7 +16,7 @@ import { IconMic, IconSend } from '../../../../components/icons/icons';
 import { appendChatMessage, hasProcessingSources, listRecentChatMessagesByBook } from '../../../../data/database';
 import { Book } from '../../../../types/Book';
 import { ChatMessage, OfflineAi } from '../types';
-import { formatAiStatus, formatAnalysisDuration, getComposerPlaceholder, getStudyToolIntent, getVisibleSources, mapStoredChatMessage } from './chatHelpers';
+import { formatAiStatus, formatAnalysisDuration, getComposerPlaceholder, getStudyToolIntent, mapStoredChatMessage } from './chatHelpers';
 import { RenderedMarkdown, TypingDots } from './MessageContent';
 import { styles } from './styles';
 
@@ -164,7 +164,9 @@ export function ALABChat({
           intent.tool,
           intent.mode,
           intent.count,
-          conversationContext
+          [conversationContext, `Student request: ${question}`]
+            .filter(Boolean)
+            .join('\n')
         )
         : await offlineAi.answerQuestion(question, conversationContext);
 
@@ -364,17 +366,6 @@ export function ALABChat({
                     ) : (
                       <RenderedMarkdown text={message.text} />
                     )}
-
-                    {!isUser && getVisibleSources(message).length > 0 ? (
-                      <View style={styles.sourcesUsed}>
-                        <Text style={styles.sourcesUsedTitle}>Sources used</Text>
-                        {getVisibleSources(message).map((source) => (
-                          <Text key={source} style={styles.sourcesUsedText}>
-                            {source}
-                          </Text>
-                        ))}
-                      </View>
-                    ) : null}
 
                     {!isUser && message.analysisText ? (
                       <Text style={styles.analysisText}>{message.analysisText}</Text>

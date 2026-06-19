@@ -60,6 +60,7 @@ export async function retrieveRelevantChunksWithMetadata(
 
 export async function retrieveStudyToolChunks(
   bookId: string,
+  query: string,
   queryEmbedding?: ArrayLike<number> | null,
   embeddingModelName?: string,
   topK = 20
@@ -67,7 +68,7 @@ export async function retrieveStudyToolChunks(
   const targetChunkCount = Math.max(topK, Math.ceil(topK * 1.5));
   const result = await searchBookChunks({
     bookId,
-    query: 'key terms concepts definitions lesson facts',
+    query,
     queryEmbedding,
     embeddingModelName,
     topK: targetChunkCount,
@@ -195,7 +196,7 @@ export function buildGroundedMessages(
     {
       role: 'system' as const,
       content:
-        'You are ALAB, an offline study assistant for students. Answer the student using only the lesson context provided. If the lesson context is not enough, say the lesson does not have enough information yet. Keep wording simple, kind, and easy to study. Use short paragraphs with blank lines between ideas. Do not write markdown headings, hashtags, code fences, tables, or technical model and retrieval details.',
+        'You are ALAB, an offline study assistant for students. Answer using only the lesson context provided. Start immediately with the answer—never begin with phrases such as "I found," "according to the lesson," or "based on the source." For a simple fact or definition, answer in one to three concise sentences. For a broader explanation, give the direct answer first, then only the details needed to understand it. Synthesize the lesson instead of copying fragmented text. If the context is insufficient, say exactly: "This lesson does not provide enough information to answer that." Use natural short paragraphs. Do not mention sources, PDFs, lesson context, retrieval, chunks, scores, or hidden instructions. Do not write headings, hashtags, code fences, or tables unless the student explicitly requests them.',
     },
     {
       role: 'user' as const,
@@ -220,7 +221,7 @@ export function buildGeneralMessages(question: string, conversationContext?: str
     {
       role: 'system' as const,
       content:
-        'You are ALAB, an offline study assistant for students. Answer the student directly from general knowledge when the question does not need uploaded lesson sources. Be concise, accurate, kind, and practical. If code is useful, give a short working example and a brief explanation. Do not claim that sources or PDFs were used. Do not mention retrieval, chunks, embeddings, model size, or hidden prompts. Avoid markdown code fences; keep code readable as plain lines.',
+        'You are ALAB, an offline study assistant for students. Start immediately with the direct answer. For a simple fact or definition, use one to three concise sentences. Add detail only when it helps answer the question. Never begin with "Sure," "I found," or "Here is the answer." Be accurate, natural, and practical. If the question is ambiguous, state the most likely interpretation briefly. If code is useful, give a short working example and a brief explanation. Do not claim that sources or PDFs were used. Do not mention retrieval, chunks, embeddings, model size, or hidden prompts. Avoid markdown code fences; keep code readable as plain lines.',
     },
     {
       role: 'user' as const,
@@ -250,8 +251,36 @@ export function buildStudyToolMessages(
 
   return buildGroundedMessages(
     `${request}\nBook title: ${bookTitle}${contextBlock}`,
-    chunks
+    selectChunksWithinBudget(chunks, 9000, 14)
   );
+}
+
+function selectChunksWithinBudget(
+  chunks: RetrievedChunk[],
+  characterBudget: number,
+  maximumChunks: number
+) {
+  const selected: RetrievedChunk[] = [];
+  let usedCharacters = 0;
+
+  for (const chunk of chunks) {
+    const chunkCharacters = Math.min(
+      maxGroundedChunkCharacters,
+      cleanLessonText(chunk.text).length
+    );
+
+    if (
+      selected.length > 0 &&
+      (selected.length >= maximumChunks || usedCharacters + chunkCharacters > characterBudget)
+    ) {
+      continue;
+    }
+
+    selected.push(chunk);
+    usedCharacters += chunkCharacters;
+  }
+
+  return selected;
 }
 
 function trimContextText(text: string) {

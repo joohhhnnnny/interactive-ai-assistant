@@ -7,7 +7,6 @@ import { OfflineAi } from '../types';
 import {
   getCorrectOptionText,
   isCorrectQuizAnswer,
-  normalizeSourceLabels,
   normalizeQuizOptionKey,
   parseQuizQuestions,
   QuizQuestion,
@@ -38,7 +37,6 @@ export function QuizScreen({
   const [isGenerating, setIsGenerating] = useState(false);
   const [isWaitingForHelper, setIsWaitingForHelper] = useState(false);
   const [statusText, setStatusText] = useState('Preparing your quiz...');
-  const [sources, setSources] = useState<string[]>([]);
 
   const resetQuizState = (nextQuestions: QuizQuestion[]) => {
     setQuestions(nextQuestions);
@@ -55,7 +53,6 @@ export function QuizScreen({
     quizGenerationIndexRef.current = generationIndex;
     setIsGenerating(true);
     setStatusText(`Preparing ${itemCount} quiz questions from ${book.title}...`);
-    setSources([]);
     resetQuizState([]);
 
     try {
@@ -74,7 +71,6 @@ export function QuizScreen({
       }
 
       resetQuizState(parsedQuestions);
-      setSources(normalizeSourceLabels(answer.sources));
       setStatusText(`Quiz ready: ${parsedQuestions.length} questions`);
     } catch {
       resetQuizState([]);
@@ -209,17 +205,6 @@ export function QuizScreen({
         ) : null}
 
         <Text style={styles.toolStatusText}>{statusText}</Text>
-
-        {sources.length > 0 ? (
-          <View style={styles.toolSourceBox}>
-            <Text style={styles.toolSourceTitle}>Sources used</Text>
-            {sources.map((source, index) => (
-              <Text key={`${source}-${index}`} style={styles.toolSourceText}>
-                {source}
-              </Text>
-            ))}
-          </View>
-        ) : null}
 
         {activeQuestion ? (
           <>

@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { Animated, Text, View } from 'react-native';
-import { cleanStudentReadableText, formatStudentOutput } from '../../../../ai/textCleanup';
+import { cleanStudentReadableText } from '../../../../ai/textCleanup';
 import { styles } from './styles';
 
 type MarkdownSegment = {
@@ -164,17 +164,13 @@ function cleanMarkdownText(text: string) {
 }
 
 function formatVisibleMessage(text: string) {
-  if (looksLikeCodeOutput(text)) {
-    return cleanStudentReadableText(text);
-  }
-
   const boldSegments: string[] = [];
   const protectedText = text.replace(/\*\*(.*?)\*\*/g, (_, segment: string) => {
     const index = boldSegments.push(segment) - 1;
     return `ALAB_BOLD_${index}`;
   });
 
-  return formatStudentOutput(protectedText).replace(
+  return cleanStudentReadableText(protectedText).replace(
     /\bALAB_BOLD_(\d+)\b/g,
     (_, index: string) => `**${boldSegments[Number(index)] ?? ''}**`
   );

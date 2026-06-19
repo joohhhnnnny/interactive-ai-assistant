@@ -238,24 +238,6 @@ export const styles = StyleSheet.create({
     lineHeight: 20,
     fontWeight: '600',
   },
-  toolSourceBox: {
-    borderRadius: 12,
-    backgroundColor: '#eef2ff',
-    padding: 14,
-    gap: 4,
-  },
-  toolSourceTitle: {
-    color: '#002576',
-    fontSize: 13,
-    lineHeight: 18,
-    fontWeight: '700',
-  },
-  toolSourceText: {
-    color: '#444653',
-    fontSize: 12,
-    lineHeight: 18,
-    fontWeight: '500',
-  },
   quizSummaryCard: {
     borderRadius: 12,
     backgroundColor: '#ffffff',

@@ -100,6 +100,20 @@ export function formatGeneralOutput(text: string) {
     .trim();
 }
 
+export function formatDirectAnswer(text: string) {
+  return formatGeneralOutput(text)
+    .replace(
+      /^\s*(?:sure[,.!]?|of course[,.!]?|here(?:'s| is) (?:the|a) (?:answer|explanation)[.:]?|i found (?:this|a|the) lesson idea[.:]?)\s*/i,
+      ''
+    )
+    .replace(
+      /^\s*(?:according to|based on) (?:the|your|this) (?:lesson|pdf|source|material)[,.:]?\s*/i,
+      ''
+    )
+    .replace(/^\s*answer\s*:\s*/i, '')
+    .trim();
+}
+
 export function splitReadableSentences(text: string) {
   return cleanLessonText(text)
     .split(/(?<=[.!?])\s+|(?=\b(?:Question|Front|Back|Answer|Explanation|Correct answer)\s*:)/i)

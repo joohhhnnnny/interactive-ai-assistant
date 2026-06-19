@@ -113,6 +113,53 @@ export function countFlashcards(text: string) {
   return count;
 }
 
+export function countValidStudyToolItems(
+  tool: 'quiz' | 'flashcards',
+  mode: StudyToolMode,
+  text: string
+) {
+  return splitStudyToolBlocks(text, tool)
+    .filter((block) => isValidStudyToolBlock(tool, mode, block))
+    .length;
+}
+
+export function mergeValidatedStudyToolOutput(
+  tool: 'quiz' | 'flashcards',
+  mode: StudyToolMode,
+  primaryText: string,
+  fallbackText: string,
+  itemCount: number
+) {
+  const selected: string[] = [];
+  const seenPrompts = new Set<string>();
+  const candidates = [
+    ...splitStudyToolBlocks(primaryText, tool),
+    ...splitStudyToolBlocks(fallbackText, tool),
+  ];
+
+  for (const block of candidates) {
+    if (!isValidStudyToolBlock(tool, mode, block)) {
+      continue;
+    }
+
+    const prompt = getStudyToolPrompt(block, tool);
+    const promptKey = normalizeOption(prompt);
+
+    if (!promptKey || seenPrompts.has(promptKey)) {
+      continue;
+    }
+
+    seenPrompts.add(promptKey);
+    selected.push(block.trim());
+
+    if (selected.length >= itemCount) {
+      break;
+    }
+  }
+
+  return selected.join('\n\n');
+}
+
 export function normalizeStudyToolOutput(text: string) {
   return text
     .replace(/\r/g, '\n')
@@ -121,6 +168,61 @@ export function normalizeStudyToolOutput(text: string) {
     .replace(/^\s*[-*]\s+(?=(Question|Front|Back|Answer|Correct answer|Explanation)\s*:)/gim, '')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
+}
+
+function splitStudyToolBlocks(text: string, tool: 'quiz' | 'flashcards') {
+  const normalized = normalizeStudyToolOutput(text);
+  const startPattern = tool === 'quiz'
+    ? /(?=^Question\s*\d*\s*[:.)-])/gim
+    : /(?=^Front\s*:)/gim;
+
+  return normalized
+    .split(startPattern)
+    .map((block) => block.trim())
+    .filter((block) =>
+      tool === 'quiz'
+        ? /^Question\s*\d*\s*[:.)-]/i.test(block)
+        : /^Front\s*:/i.test(block)
+    );
+}
+
+function isValidStudyToolBlock(
+  tool: 'quiz' | 'flashcards',
+  mode: StudyToolMode,
+  block: string
+) {
+  if (tool === 'flashcards') {
+    const front = block.match(/^Front\s*:\s*(.+)$/im)?.[1]?.trim() ?? '';
+    const back = block.match(/^Back\s*:\s*(.+)$/im)?.[1]?.trim() ?? '';
+
+    return Boolean(
+      front &&
+      back &&
+      normalizeOption(front) !== normalizeOption(back)
+    );
+  }
+
+  if (mode === 'mcq') {
+    return hasValidMcqBlock(block);
+  }
+
+  const question = block.match(/^Question\s*\d*\s*[:.)-]\s*(.+)$/im)?.[1]?.trim() ?? '';
+  const answer = block.match(/^Answer\s*:\s*(.+)$/im)?.[1]?.trim() ?? '';
+  const explanation = block.match(/^Explanation\s*:\s*(.+)$/im)?.[1]?.trim() ?? '';
+
+  if (!question || !answer || !explanation) {
+    return false;
+  }
+
+  return mode !== 'fill_blank' || /_{3,}|\bblank\b/i.test(question);
+}
+
+function getStudyToolPrompt(block: string, tool: 'quiz' | 'flashcards') {
+  const pattern = tool === 'quiz'
+    ? /^Question\s*\d*\s*[:.)-]\s*(.+)$/im
+    : /^Front\s*:\s*(.+)$/im;
+
+  return block.match(pattern)?.[1]?.trim() ?? '';
 }
 
 function hasValidMcqBlock(block: string) {
